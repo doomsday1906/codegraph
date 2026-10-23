@@ -89,14 +89,14 @@ describe('an unchanged file over the size limit is not reported as drifted (#191
   it('reads as current in the viewer and in MCP until its size changes', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-oversize-drift-'));
     fs.writeFileSync(path.join(dir, 'app.ts'), 'export function alpha() { return 1; }\n');
-    // 1.4 MB of ordinary text: over the index limit, under the viewer's 8 MB read cap.
+    // Ordinary text over the index limit, under the viewer's 8 MB read cap.
     // Each line differs: Windows Defender's script scan of a freshly written `.js`
     // made of one statement repeated 110k times takes close to a minute on the
     // first read, so the viewer's read below blew the test timeout there. Real
     // code of the same size is scanned in milliseconds.
     const line = 'const last = 0;\n';
     const lines: string[] = [];
-    for (let size = 0, i = 0; size < 1.4 * 1024 * 1024; i++) {
+    for (let size = 0, i = 0; size <= MAX_SOURCE_FILE_SIZE_BYTES; i++) {
       lines.push(`const x${i} = ${i};\n`);
       size += lines[i]!.length;
     }

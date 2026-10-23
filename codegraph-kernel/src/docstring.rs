@@ -145,6 +145,16 @@ pub fn preceding_docstring(node: Node, src: &str) -> Option<String> {
     while let Some(s) = sibling {
         if is_comment(s.kind()) {
             comments.push(&src[s.byte_range()]);
+            if comments.len() == 32 {
+                // Long runs need one forward walk; repeated sibling lookups rescan extras.
+                let parent = anchor.parent()?;
+                let mut cursor = parent.walk();
+                let siblings: Vec<_> = parent.named_children(&mut cursor)
+                    .take_while(|n| n.start_byte() < anchor.start_byte()).collect();
+                comments = siblings.into_iter().rev().take_while(|n| is_comment(n.kind()))
+                    .map(|n| &src[n.byte_range()]).collect();
+                break;
+            }
             sibling = s.prev_named_sibling();
         } else {
             break;

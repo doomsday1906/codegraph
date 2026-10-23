@@ -14,6 +14,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Native Python extraction walks long comment runs without repeated tree scans, preserving documentation, symbols and references.
 - MCP sessions release excess query workers after a minute idle, reducing memory retained after concurrent requests while keeping one worker ready.
 - Projects can set `maxSourceFileSizeBytes` in `codegraph.json` to include large hand-written source files, and normal sync recovers previously skipped files and their callers.
 - CLI and MCP status show the source-size limit and how many files were excluded by size, and explore responses flag incomplete coverage.

@@ -23,6 +23,8 @@ fork-specific runtime identity, the 2 MiB compatibility default and native-kerne
 installation checks.
 `query-pool.test.ts` also runs against source and the staged runtime before
 activation, including idle memory retirement, regrowth, and worker teardown.
+`kernel-wide-comments.test.ts` bounds native parser regressions and verifies all
+documentation, symbols and references survive long module and body comment runs.
 
 Deploy a clean, pushed commit with:
 

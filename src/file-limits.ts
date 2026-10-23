@@ -4,9 +4,9 @@ import * as fsp from 'fs/promises';
 /**
  * Largest source file CodeGraph will parse or read during resolution. Generated
  * bundles, minified sources, and dependency archives above this limit provide no
- * useful symbols; 1 MB covers essentially all hand-written source.
+ * useful symbols; allow the large hand-written modules in real repositories.
  */
-export const MAX_SOURCE_FILE_SIZE_BYTES = 1024 * 1024;
+export const MAX_SOURCE_FILE_SIZE_BYTES = 2 * 1024 * 1024;
 
 /**
  * What stands in for the content of a file over MAX_SOURCE_FILE_SIZE_BYTES. Such a file is

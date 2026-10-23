@@ -2896,14 +2896,12 @@ export class ExtractionOrchestrator {
    */
   private healZeroNodeRows(): void {
     for (const f of this.queries.getAllFiles()) {
-      // A zero-node row WITH recorded errors is a deliberate skip marker
-      // (#1557: oversized / repeatedly-unparseable files are persisted with
-      // their reason so syncs stop retrying them) — leave those alone. The
-      // #1541 wipe rows are the error-FREE zero-node rows.
+      // Retry old size skips when the source now fits; preserve other parse errors.
       if (
         f.nodeCount === 0 &&
         !isFileLevelOnlyLanguage(f.language) &&
-        (f.errors === undefined || f.errors.length === 0)
+        (f.errors === undefined || f.errors.length === 0 ||
+          (f.size <= MAX_SOURCE_FILE_SIZE_BYTES && f.errors.every(error => error.code === 'size_exceeded')))
       ) {
         this.queries.deleteFile(f.path);
       }

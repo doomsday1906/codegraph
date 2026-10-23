@@ -35,7 +35,7 @@ describe('resolution file reads', () => {
     const fd = fs.openSync(archive, 'w');
     try {
       fs.writeSync(fd, Buffer.from([0x1f, 0x8b]));
-      fs.ftruncateSync(fd, 2 * 1024 * 1024);
+      fs.ftruncateSync(fd, MAX_SOURCE_FILE_SIZE_BYTES + 1);
     } finally {
       fs.closeSync(fd);
     }

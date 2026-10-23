@@ -206,7 +206,7 @@ describe('Sync Module', () => {
 
       it('persists an oversized skipped file so later syncs do not retry it (#1557)', async () => {
         const filePath = path.join(testDir, 'src', 'oversized.ts');
-        fs.writeFileSync(filePath, 'const value = 1;\n'.repeat(70_000));
+        fs.writeFileSync(filePath, 'const value = 1;\n'.repeat(140_000));
 
         const first = await cg.sync();
         expect(first.filesAdded).toBe(1);

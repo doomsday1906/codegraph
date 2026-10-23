@@ -525,14 +525,9 @@ export class CodeGraph {
       // the final fold-up before the interval is restored in the finally.
       // Kill switch: CODEGRAPH_NO_WAL_DEFER=1. Non-WAL journal modes (some
       // network filesystems) have no WAL to defer — skip.
-      // Fast-init: on a COMPLETELY fresh DB, trade crash-durability for speed
-      // during the bulk build (journal in memory, no fsync). Safe because the
-      // DB is disposable until the index completes — index_state stays
-      // 'indexing' and a crashed init is re-run from scratch; existing DBs
-      // (re-index/sync) never take this path. Kill switch:
-      // CODEGRAPH_NO_FAST_INIT=1 (same pattern as CODEGRAPH_NO_WAL_DEFER).
       const freshDb = this.queries.getNodeAndEdgeCount().nodes === 0;
-      const fastInit = process.env.CODEGRAPH_NO_FAST_INIT !== '1' && freshDb;
+      // Even a fresh index may have retained MCP readers: keep its WAL journal.
+      const fastInit = false;
       if (fastInit) {
         try {
           this.db.getDb().pragma('journal_mode = MEMORY');

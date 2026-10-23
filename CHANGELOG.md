@@ -12,6 +12,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- Hand-written source files up to 2 MiB are indexed, and normal sync recovers files skipped by the previous smaller limit.
+- Bulk indexing keeps working while another client holds a read snapshot.
+
 
 ## [1.6.2] - 2026-10-03
 

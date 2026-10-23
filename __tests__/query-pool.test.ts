@@ -16,8 +16,14 @@ import { Worker } from 'worker_threads';
 import { CodeGraph } from '../src';
 import { ExploreSessionState, EXPLORE_EMISSION_KEY } from '../src/mcp/explore-session-state';
 import type { MCPEngine } from '../src/mcp/engine';
-import { QueryPool, resolvePoolSize, type PoolWorker } from '../src/mcp/query-pool';
+import * as sourceQueryPool from '../src/mcp/query-pool';
+import type { PoolWorker } from '../src/mcp/query-pool';
 import type { ToolResult } from '../src/mcp/tools';
+
+const runtimeDist = process.env.CODEGRAPH_TEST_DIST ?? path.resolve(__dirname, '../dist');
+const { QueryPool, resolvePoolSize }: typeof sourceQueryPool = process.env.CODEGRAPH_TEST_DIST
+  ? require(path.join(runtimeDist, 'mcp/query-pool.js')) : sourceQueryPool;
+type QueryPool = sourceQueryPool.QueryPool;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -443,7 +449,7 @@ describe('QueryPool idle retirement', () => {
 });
 
 // Use the built engine so its pool loads the real compiled worker sibling.
-const BuiltEngine: typeof MCPEngine = require('../dist/mcp/engine').MCPEngine;
+const BuiltEngine: typeof MCPEngine = require(path.join(runtimeDist, 'mcp/engine.js')).MCPEngine;
 
 describe('MCP query pool with real projects (#1465)', () => {
   let tempDir: string;
@@ -535,7 +541,7 @@ describe('MCP query pool with real projects (#1465)', () => {
     pool = new QueryPool({
       root: alpha, size: 1,
       createWorker: () => {
-        const worker = new Worker(path.resolve(__dirname, '../dist/mcp/query-worker.js'), {
+        const worker = new Worker(path.join(runtimeDist, 'mcp/query-worker.js'), {
           workerData: { root: workers.length === 0 ? tempDir : alpha },
         });
         workers.push(worker);
@@ -563,7 +569,7 @@ describe('MCP query pool with real projects (#1465)', () => {
     pool = new QueryPool({
       root: alpha, size: 1,
       createWorker: () => {
-        const worker = new Worker(path.resolve(__dirname, '../dist/mcp/query-worker.js'), { workerData: { root: alpha } });
+        const worker = new Worker(path.join(runtimeDist, 'mcp/query-worker.js'), { workerData: { root: alpha } });
         let started = false;
         worker.on('message', (m: { type?: string }) => { if (m?.type === 'ready') started = true; });
         const terminate = worker.terminate.bind(worker);

@@ -65,7 +65,8 @@ function main(args) {
   run('npm', ['run', 'build']);
   run(process.execPath, ['--liftoff-only', '--test', '__tests__/source-compatibility.test.cjs']);
   const sourceChecks = ['--liftoff-only', 'node_modules/vitest/vitest.mjs', 'run',
-    '__tests__/source-indexing.test.ts', '--project', 'engine', '--maxWorkers', '1', '--minWorkers', '1', '--testTimeout', '60000'];
+    '__tests__/source-indexing.test.ts', '__tests__/query-pool.test.ts',
+    '--project', 'engine', '--maxWorkers', '1', '--minWorkers', '1', '--testTimeout', '60000'];
   run(process.execPath, sourceChecks);
   const release = path.join(dataRoot, 'releases', revision + '-' + Date.now());
   const lib = path.join(release, 'lib');

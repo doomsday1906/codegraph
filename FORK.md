@@ -21,6 +21,8 @@ CLI/MCP status and explore responses expose remaining size exclusions.
 and deployment's staged-runtime checks. `source-compatibility.test.cjs` keeps
 fork-specific runtime identity, the 2 MiB compatibility default and native-kernel
 installation checks.
+`query-pool.test.ts` also runs against source and the staged runtime before
+activation, including idle memory retirement, regrowth, and worker teardown.
 
 Deploy a clean, pushed commit with:
 

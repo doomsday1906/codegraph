@@ -1,0 +1,32 @@
+name: CodeGraph upstream review checks
+on:
+  push:
+    branches: [verify/upstream-review-20261024]
+permissions:
+  contents: read
+jobs:
+  source-coverage:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 46b8608f76d00f567176c623443733c8cf2db1dc
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build native kernel
+        shell: bash
+        run: bash scripts/build-kernel.sh
+      - name: Run source coverage and WAL regressions
+        shell: bash
+        env:
+          CODEGRAPH_KERNEL_EXPECT: '1'
+          CODEGRAPH_TELEMETRY: '0'
+          CODEGRAPH_NO_UPDATE_CHECK: '1'
+        run: node node_modules/vitest/vitest.mjs run __tests__/source-indexing.test.ts __tests__/bounded-source.test.ts __tests__/oversize-file-not-read.test.ts __tests__/resolution-file-read.test.ts __tests__/sync.test.ts __tests__/mcp-status-freshness.test.ts __tests__/wal-deferral.test.ts __tests__/status-index-health.test.ts __tests__/status-json.test.ts __tests__/kernel-scaffold.test.ts

@@ -2855,6 +2855,7 @@ program
       {
         currentVersion: packageJson.version,
         method,
+        managedSource: packageJson.agentworkspace,
         resolveLatest: () => up.resolveLatestVersion(),
         run: up.defaultRun,
         capture: up.defaultCapture,

@@ -8,6 +8,20 @@ const dist = process.env.CODEGRAPH_TEST_DIST || path.resolve(__dirname, '../dist
 const limits = require(path.join(dist, 'file-limits.js'));
 const CG = require(path.join(dist, 'index.js')).default;
 
+test('maintained builds identify the exact commit when connecting to a daemon', () => {
+  const metadata = JSON.parse(fs.readFileSync(path.join(dist, '../package.json'), 'utf8'));
+  const version = require(path.join(dist, 'mcp/version.js'));
+  assert.equal(version.CodeGraphPackageVersion, metadata.version);
+  assert.equal(version.CodeGraphRuntimeIdentity, metadata.agentworkspace
+    ? metadata.version + '+aw.' + metadata.agentworkspace.revision : metadata.version);
+});
+
+test('source-built native parsing remains available in the installed release', () => {
+  const kernel = require(path.join(dist, 'extraction/kernel/loader.js')).getKernel();
+  assert(kernel, 'native kernel must be built and included');
+  assert(kernel.contractInfo().languages.includes('python'));
+});
+
 test('large source and old size markers recover with incoming calls and bounded reads', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-source-limit-'));
   let cg;
@@ -37,6 +51,7 @@ test('large source and old size markers recover with incoming calls and bounded 
       WHERE e.kind='calls' AND s.name='caller' AND t.name='included'`).get();
     assert(calls.count > 0);
     assert.equal(fs.statSync(source).mtimeMs, before.mtimeMs);
+    assert.equal(fs.statSync(source).size, before.size);
   } finally {
     limits.MAX_SOURCE_FILE_SIZE_BYTES = 2097152;
     if (cg) cg.close();
@@ -63,7 +78,7 @@ test('bulk indexing finishes while an independent reader retains its snapshot', 
         db.prepare('SELECT count(*) FROM nodes').get();
         Atomics.store(state,0,1); Atomics.notify(state,0);
         Atomics.wait(state,0,1,60000);
-        db.exec('ROLLBACK'); db.close();
+        db.exec('ROLLBACK'); db.close(); Atomics.store(state,0,3);
       `, { eval: true, workerData: { path: path.join(root, '.codegraph/codegraph.db'), state: state.buffer } });
       Atomics.wait(state, 0, 0, 10000);
       assert.equal(Atomics.load(state, 0), 1);

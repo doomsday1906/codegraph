@@ -54,7 +54,7 @@ import {
   getDaemonSocketCandidates,
   getDaemonSocketPath,
 } from './daemon-paths';
-import { CodeGraphPackageVersion } from './version';
+import { CodeGraphRuntimeIdentity as CodeGraphPackageVersion } from './version';
 import {
   releaseWriterLock,
   tryAcquireWriterLock,

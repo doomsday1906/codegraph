@@ -288,6 +288,7 @@ export interface UpgradeOptions {
 /** Injectable side-effects so the orchestrator stays unit-testable. */
 export interface UpgradeDeps {
   currentVersion: string;
+  managedSource?: { root: string; revision: string };
   method: InstallMethod;
   resolveLatest: (pin?: string) => Promise<string>;
   /** Run a command inheriting stdio; returns its exit code (-1 = spawn failed). */
@@ -342,6 +343,15 @@ export function reindexAdvisory(): string {
  * Returns the process exit code (0 = success / nothing to do, 1 = failure).
  */
 export async function runUpgrade(opts: UpgradeOptions, deps: UpgradeDeps): Promise<number> {
+  if (deps.managedSource) {
+    if (opts.version) {
+      deps.error('Merge the desired upstream release into the maintained source fork, then run codegraph upgrade.');
+      return 1;
+    }
+    deps.log(`AgentWorkspace CodeGraph ${deps.managedSource.revision}`);
+    return deps.run(process.execPath, [path.join(deps.managedSource.root, 'scripts/deploy-local.mjs'),
+      '--update', ...(opts.check ? ['--check'] : []), ...(opts.force ? ['--force'] : [])]);
+  }
   const { currentVersion, method } = deps;
 
   // Resolve the target version (pinned or latest).

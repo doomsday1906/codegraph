@@ -2,6 +2,8 @@
 
 # CodeGraph
 
+AgentWorkspace maintains this fork on `agentworkspace`; source installation and updates are described in [FORK.md](FORK.md).
+
 Already installed? Run `codegraph upgrade`
 
 Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.

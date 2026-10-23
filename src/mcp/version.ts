@@ -1,12 +1,13 @@
 /**
  * Resolved package version, computed once at module load.
  *
- * The version string is the rendezvous datum between cooperating daemon and
+ * The runtime identity is the rendezvous datum between cooperating daemon and
  * proxy processes: the daemon advertises its version in the hello line, and
  * the proxy refuses to share IPC across a mismatch (falls back to direct
  * mode). Keeping the resolution in one place avoids drift between the CLI
- * `--version` output (which reads `package.json` directly) and the daemon
- * handshake.
+ * `--version` output (which reads `package.json` directly) and the base package
+ * identity. Maintained deployments add their exact source commit for the
+ * daemon handshake so two builds of the same upstream version stay distinct.
  *
  * Resolution strategy: read the bundled `package.json` two levels up from
  * this file — same relative position whether we're loaded from `src/mcp/` or
@@ -34,3 +35,13 @@ function readPackageVersion(): string {
 }
 
 export const CodeGraphPackageVersion = readPackageVersion();
+
+/** A maintained build must not attach to a different commit's daemon. */
+export const CodeGraphRuntimeIdentity = (() => {
+  try {
+    const revision = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')).agentworkspace?.revision;
+    if (typeof revision === 'string' && /^[a-f0-9]{40}$/.test(revision))
+      return `${CodeGraphPackageVersion}+aw.${revision}`;
+  } catch { /* Ordinary upstream installations use the package version. */ }
+  return CodeGraphPackageVersion;
+})();

@@ -351,6 +351,7 @@ function makeDeps(
   const calls: Calls = { runs: [], captures: [], logs: [], errors: [], promptHookWires: 0 };
   const deps: UpgradeDeps = {
     currentVersion: overrides.currentVersion,
+    managedSource: overrides.managedSource,
     method: overrides.method,
     resolveLatest: overrides.resolveLatest ?? (async () => 'v0.9.9'),
     run: (cmd, args, env) => {
@@ -386,6 +387,18 @@ function decodeEncodedCommand(args: string[]): string {
 }
 
 describe('runUpgrade', () => {
+  it('updates a maintained installation through its source deployment, preserving flags and errors', async () => {
+    const { deps, calls } = makeDeps({ currentVersion: '1.6.2', method: { kind: 'npm', scope: 'global' },
+      managedSource: { root: '/fork', revision: 'abc' },
+      resolveLatest: async () => { throw Error('must not query upstream releases'); } }, 7);
+    expect(await runUpgrade({ check: true, force: true }, deps)).toBe(7);
+    expect(calls.runs).toEqual([{cmd: process.execPath,
+      args: [path.join('/fork', 'scripts/deploy-local.mjs'), '--update', '--check', '--force'], env: undefined}]);
+    expect(calls.promptHookWires).toBe(0);
+    expect(await runUpgrade({ version: '2.0.0' }, deps)).toBe(1);
+    expect(calls.runs).toHaveLength(1);
+  });
+
   it('does nothing when already up to date', async () => {
     const { deps, calls } = makeDeps({ method: { kind: 'npm', scope: 'global' }, currentVersion: '0.9.9' });
     const code = await runUpgrade({}, deps);

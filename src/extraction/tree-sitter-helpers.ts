@@ -106,6 +106,8 @@ function cleanCommentMarkers(comment: string): string {
     .trim();
 }
 
+const DOCSTRING_COMMENT_TYPES = new Set(['comment', 'line_comment', 'block_comment', 'documentation_comment']);
+
 /**
  * Get the docstring/comment preceding a node
  */
@@ -123,19 +125,23 @@ export function getPrecedingDocstring(node: SyntaxNode, source: string): string 
   let sibling = anchor.previousNamedSibling;
   const comments: string[] = [];
 
-  while (sibling) {
-    if (
-      sibling.type === 'comment' ||
-      sibling.type === 'line_comment' ||
-      sibling.type === 'block_comment' ||
-      sibling.type === 'documentation_comment'
-    ) {
-      comments.unshift(getNodeText(sibling, source));
-      sibling = sibling.previousNamedSibling;
-    } else {
+  while (sibling && DOCSTRING_COMMENT_TYPES.has(sibling.type)) {
+    comments.push(getNodeText(sibling, source));
+    if (comments.length === 32 && anchor.parent) {
+      // Repeated previous-sibling lookups rescan long runs of extra nodes.
+      const siblings = anchor.parent.namedChildren;
+      const index = siblings.findIndex(child => child.equals(anchor));
+      comments.length = 0;
+      for (let i = index - 1; i >= 0; i--) {
+        const child = siblings[i]!;
+        if (!DOCSTRING_COMMENT_TYPES.has(child.type)) break;
+        comments.push(getNodeText(child, source));
+      }
       break;
     }
+    sibling = sibling.previousNamedSibling;
   }
+  comments.reverse();
 
   if (comments.length === 0) return undefined;
 

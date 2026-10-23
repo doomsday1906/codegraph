@@ -163,7 +163,7 @@ pub fn preceding_docstring(node: Node, src: &str) -> Option<String> {
     if comments.is_empty() {
         return None;
     }
-    comments.reverse(); // collected nearest-first; TS unshifts to keep source order
+    comments.reverse(); // collected nearest-first; return source order
     Some(
         comments
             .iter()

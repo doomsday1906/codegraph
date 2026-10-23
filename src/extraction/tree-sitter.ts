@@ -1008,9 +1008,8 @@ export class TreeSitterExtractor {
             break;
           }
         }
-        for (let i = 0; i < n.namedChildCount; i++) {
-          const c = n.namedChild(i);
-          if (c) dstack.push(c);
+        for (const child of n.namedChildren) {
+          dstack.push(child);
         }
       }
       for (const [nm, c] of declCounts) if (c > (fileScopeCounts.get(nm) ?? 1)) targets.delete(nm);
@@ -1062,9 +1061,8 @@ export class TreeSitterExtractor {
             });
           }
         }
-        for (let i = 0; i < n.namedChildCount; i++) {
-          const c = n.namedChild(i);
-          if (c) stack.push(c);
+        for (const child of n.namedChildren) {
+          stack.push(child);
         }
       }
     }
@@ -1496,11 +1494,8 @@ export class TreeSitterExtractor {
 
     // Visit children (unless the extract method already visited them)
     if (!skipChildren) {
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child) {
-          this.visitNode(child);
-        }
+      for (const child of node.namedChildren) {
+        this.visitNode(child);
       }
     }
   }
@@ -1934,11 +1929,8 @@ export class TreeSitterExtractor {
     const body = resolvedBody ?? node;
 
     // Visit all children for methods and properties
-    for (let i = 0; i < body.namedChildCount; i++) {
-      const child = body.namedChild(i);
-      if (child) {
-        this.visitNode(child);
-      }
+    for (const child of body.namedChildren) {
+      this.visitNode(child);
     }
 
     // Synthesize compile-time-generated members (Lombok accessors, #912). Runs
@@ -5645,8 +5637,7 @@ export class TreeSitterExtractor {
 
     // 1. Decorators that are direct children of the declaration
     //    (method/property style, also some grammars for class).
-    for (let i = 0; i < declNode.namedChildCount; i++) {
-      const child = declNode.namedChild(i);
+    for (const child of declNode.namedChildren) {
       consider(child);
       // Java/Kotlin/C# put annotations INSIDE a `modifiers` node
       // (`@MyAnno public class X` → class_declaration → modifiers → annotation),
@@ -5667,31 +5658,9 @@ export class TreeSitterExtractor {
     //    (e.g. `@A class Foo {} @B class Bar {}` would otherwise
     //    attribute @A to Bar).
     //
-    //    Note on identity: tree-sitter web bindings return fresh JS
-    //    wrapper objects from `parent`/`namedChild` navigation, so
-    //    `sibling === declNode` is unreliable — `startIndex` does
-    //    the matching instead.
-    const parent = declNode.parent;
-    if (parent) {
-      const declStart = declNode.startIndex;
-      let declIdx = -1;
-      for (let i = 0; i < parent.namedChildCount; i++) {
-        const sibling = parent.namedChild(i);
-        if (sibling && sibling.startIndex === declStart) {
-          declIdx = i;
-          break;
-        }
-      }
-      if (declIdx > 0) {
-        for (let j = declIdx - 1; j >= 0; j--) {
-          const sibling = parent.namedChild(j);
-          if (!sibling) continue;
-          if (sibling.type !== 'decorator' && sibling.type !== 'annotation' && sibling.type !== 'marker_annotation') {
-            break; // non-decorator separator → stop consuming
-          }
-          consider(sibling);
-        }
-      }
+    for (let sibling = declNode.previousNamedSibling; sibling; sibling = sibling.previousNamedSibling) {
+      if (sibling.type !== 'decorator' && sibling.type !== 'annotation' && sibling.type !== 'marker_annotation') break;
+      consider(sibling);
     }
   }
 
@@ -6161,11 +6130,8 @@ export class TreeSitterExtractor {
         return;
       }
 
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child) {
-          visitForCallsAndStructure(child);
-        }
+      for (const child of node.namedChildren) {
+        visitForCallsAndStructure(child);
       }
     };
 
@@ -6213,9 +6179,7 @@ export class TreeSitterExtractor {
     }
 
     // Look for extends/implements clauses
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const child = node.namedChild(i);
-      if (!child) continue;
+    for (const child of node.namedChildren) {
 
       // Dart: `class A = B with M implements I;` keeps its supertypes in a
       // `mixin_application` — the same shapes as a class body's clauses.

@@ -6627,8 +6627,15 @@ export class ToolHandler {
         if (cursor <= c.end) spans.push({ range: { start: cursor, end: c.end }, plain: true });
         const first = spans[0];
         const last = spans[spans.length - 1];
-        if (first?.plain) first.range.start = Math.max(1, first.range.start - contextPadding);
-        if (last?.plain) last.range.end = Math.min(fileLines.length, last.range.end + contextPadding);
+        // Optional context must not price a small requested body out of its reservation.
+        if (first?.plain) {
+          const start = Math.max(1, first.range.start - contextPadding);
+          if (renderedSpanCost(start, first.range.end) <= allowance) first.range.start = start;
+        }
+        if (last?.plain) {
+          const end = Math.min(fileLines.length, last.range.end + contextPadding);
+          if (renderedSpanCost(last.range.start, end) <= allowance) last.range.end = end;
+        }
         // Spans that touch in the file are one block, not two parts with a gap
         // marker between adjacent lines.
         const merged: ExploreLineRange[] = [];

@@ -129,6 +129,28 @@ test('CLI and MCP status expose exclusions independently of a completed run', as
   } finally { cg.close(); }
 }, 60000);
 
+test.each(['before', 'after'])('recovered source survives an oversized context line %s its definition', async position => {
+  const root = project();
+  const definition = 'def included(): return 42\n';
+  const comment = '#'.repeat(30000) + '\n';
+  configure(root, 128);
+  fs.writeFileSync(path.join(root, 'source.py'), position === 'before' ? comment + definition : definition + comment);
+  fs.writeFileSync(path.join(root, 'caller.py'), 'from source import included\ndef caller(): return included()\n');
+  const cg = await CG.init(root, { index: true });
+  try {
+    const handler = dist ? new (require(path.join(dist, 'mcp/tools.js')).ToolHandler)(cg) : new ToolHandler(cg);
+    expect((await handler.execute('codegraph_explore', { query: 'included' })).content[0].text)
+      .toContain('1 source file excluded by size');
+    configure(root, 65536);
+    await cg.sync();
+    const text = (await handler.execute('codegraph_explore', { query: 'caller included' })).content[0].text;
+    expect(text).toContain(definition.trim());
+    expect(text).not.toContain('excluded by size');
+    expect(text).not.toContain(comment.trim());
+    expect(text.length).toBeLessThan(10000);
+  } finally { cg.close(); }
+}, 60000);
+
 test('bulk indexing finishes while an independent reader retains its snapshot', async () => {
   const root = project();
   const state = new Int32Array(new SharedArrayBuffer(4));

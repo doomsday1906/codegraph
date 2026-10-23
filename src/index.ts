@@ -58,6 +58,7 @@ import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
 import ignore from 'ignore';
 import { loadDeprioritizePatterns } from './project-config';
+import { getMaxSourceFileSizeBytes } from './file-limits';
 import { CodeGraphPackageVersion } from './mcp/version';
 import { extractSegmentSearchWords, segmentLookupVariants, splitIdentifierSegments } from './search/identifier-segments';
 import { createYielder } from './resolution/cooperative-yield';
@@ -899,7 +900,7 @@ export class CodeGraph {
         // timer-driven PASSIVE checkpoints ran, and a query-pool reader could
         // pin frames while the WAL grew without a bound.
         const backpressure = walValve ? () => walValve!.backpressure() : undefined;
-        const fullReconcile = !options.paths || options.paths.length === 0;
+        const fullReconcile = !options.paths || options.paths.length === 0 || this.orchestrator.sourceSizeLimitChanged();
         const gitState = this.orchestrator.beginGitIndexState(fullReconcile);
 
         // An interrupted index may have absorbed its changed files before
@@ -907,7 +908,7 @@ export class CodeGraph {
         let refreshSynthesis = this.queries.getMetadata('synthesis_pending') === '1' ||
           this.queries.getUnresolvedReferencesCount() > 0;
         if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
-        const result = await this.orchestrator.sync(options.onProgress, options.paths, backpressure,
+        const result = await this.orchestrator.sync(options.onProgress, fullReconcile ? undefined : options.paths, backpressure,
           (filePath, content) => {
             if (!refreshSynthesis && (this.queries.hasSynthesizedEdgesTouchingFile(filePath) ||
               this.queries.wasSynthesisInput(filePath) ||
@@ -1470,9 +1471,15 @@ export class CodeGraph {
   // Graph Statistics
   // ===========================================================================
 
-  /**
-   * Get statistics about the knowledge graph
-   */
+  /** Coverage exclusions are separate from whether the last indexing run completed. */
+  getSourceCoverage(): { sizeExcludedFileCount: number; maxSourceFileSizeBytes: number } {
+    return {
+      sizeExcludedFileCount: this.queries.getSizeExcludedFileCount(),
+      maxSourceFileSizeBytes: getMaxSourceFileSizeBytes(this.projectRoot),
+    };
+  }
+
+  /** Get statistics about the knowledge graph. */
   getStats(): GraphStats {
     const stats = this.queries.getStats();
     stats.dbSizeBytes = this.db.getSize();

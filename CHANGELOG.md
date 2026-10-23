@@ -14,7 +14,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
-- Hand-written source files up to 2 MiB are indexed, and normal sync recovers files skipped by the previous smaller limit.
+- Projects can set `maxSourceFileSizeBytes` in `codegraph.json` to include large hand-written source files, and normal sync recovers previously skipped files and their callers.
+- CLI and MCP status show the source-size limit and how many files were excluded by size, and explore responses flag incomplete coverage.
 - Bulk indexing keeps working while another client holds a read snapshot.
 
 

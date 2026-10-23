@@ -83,6 +83,7 @@ test('committed limit changes recover unchanged skipped source and callers, then
       WHERE e.kind='calls' AND s.name='caller' AND t.name='included'`).get() as { count: number };
     expect(calls.count).toBeGreaterThan(0);
     expect(cg.getChangedFiles().modified).toEqual([]);
+    expect(fs.statSync(source).mtimeMs).toBe(before.mtimeMs);
     // Touch-only changes must agree with the configured hash/read policy across surfaces.
     const record = cg.getFile('source.py')!;
     fs.utimesSync(source, new Date(), new Date(Date.now() + 5000));

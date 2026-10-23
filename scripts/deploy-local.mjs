@@ -64,6 +64,9 @@ function main(args) {
   run('npm', ['run', 'build:kernel'], source, { ...process.env, CARGO_BUILD_JOBS: '2' });
   run('npm', ['run', 'build']);
   run(process.execPath, ['--liftoff-only', '--test', '__tests__/source-compatibility.test.cjs']);
+  const sourceChecks = ['--liftoff-only', 'node_modules/vitest/vitest.mjs', 'run',
+    '__tests__/source-indexing.test.ts', '--project', 'engine', '--maxWorkers', '1', '--minWorkers', '1', '--testTimeout', '60000'];
+  run(process.execPath, sourceChecks);
   const release = path.join(dataRoot, 'releases', revision + '-' + Date.now());
   const lib = path.join(release, 'lib');
   fs.mkdirSync(lib, { recursive: true });
@@ -81,6 +84,8 @@ function main(args) {
   fs.chmodSync(path.join(release, 'node'), 0o755);
   activate(release, dataRoot, binRoot, () => {
     run(path.join(release, 'node'), ['--liftoff-only', '--test', '__tests__/source-compatibility.test.cjs'], source,
+      { ...process.env, CODEGRAPH_TEST_DIST: path.join(lib, 'dist'), CODEGRAPH_TELEMETRY: '0' });
+    run(path.join(release, 'node'), sourceChecks, source,
       { ...process.env, CODEGRAPH_TEST_DIST: path.join(lib, 'dist'), CODEGRAPH_TELEMETRY: '0' });
     run(path.join(release, 'node'), [path.join(lib, 'dist/bin/codegraph.js'), '--version']);
     const upgrade = execFileSync(path.join(release, 'node'),

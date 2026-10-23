@@ -10,10 +10,17 @@ the global npm package as our update route. The old npm installation may remain
 while existing sessions still depend on it; retire it through npm only after
 checking that no live processes need its files. Keep project `.codegraph/` data.
 
-The source carries three fixes: a bounded 2 MiB source limit, recovery of old
-size-exclusion markers during normal sync, and WAL bulk indexing with retained
-readers. `__tests__/source-compatibility.test.cjs` exercises these with real SQLite
-and parsing, including the previously unresolved incoming caller.
+The source keeps WAL bulk indexing safe with retained readers, supports a shared
+`maxSourceFileSizeBytes` in each project's `codegraph.json`, and recovers old size
+exclusions and incoming callers during sync. Our default stays at 2 MiB to preserve
+already-indexed large files in existing worktrees; upstream can keep its 1 MiB
+default when taking the configurable limit.
+AgentWorkspace also commits an explicit 2 MiB project setting.
+CLI/MCP status and explore responses expose remaining size exclusions.
+`__tests__/source-indexing.test.ts` exercises these through normal `npm test`
+and deployment's staged-runtime checks. `source-compatibility.test.cjs` keeps
+fork-specific runtime identity, the 2 MiB compatibility default and native-kernel
+installation checks.
 
 Deploy a clean, pushed commit with:
 

@@ -2,6 +2,10 @@
 
 Canonical project guidance for coding agents working in this repository (Codex/Astra, Claude Code via `@AGENTS.md`, Cursor, etc.).
 
+## AgentWorkspace fork
+
+Read [FORK.md](FORK.md) before changing this fork, updating the installed tool, or preparing an upstream PR. It owns our branch/remotes, commit/push and deployment routes. This checkout runs on Andrew's Linux/WSL workstation; the inherited macOS/VM examples below describe the upstream maintainer's environment. Ordinary pushes to our fork follow `FORK.md`; the release workflow below describes upstream publishing.
+
 **Codex size note:** root `AGENTS.md` is intentionally kept near ~35 KiB (critical build/test/arch/retrieval rules retained). Longer validation methodology + the Excalidraw worked example live in `docs/AGENTS.md`. This environment sets `project_doc_max_bytes = 49152` so root (and root+`docs/` when cwd is under `docs/`) are not silently truncated at the 32 KiB default.
 
 ## Project Overview
@@ -273,8 +277,9 @@ Once `package.json` is at the target version on `main`, trigger
 4. Creates the GitHub Release with notes from the freshly-promoted `[X.Y.Z]` block.
 5. Publishes the npm shim + per-platform packages. Requires the `NPM_TOKEN` repo secret.
 
-**Do not run `npm publish`, `git push`, or `git tag` yourself** — these are
-publish actions on shared state. Write the files, hand the user the commands.
+Release publishing (`npm publish`, release tags, or the Release workflow) needs
+release authorization. Ordinary contribution commits and pushes to our fork
+follow [FORK.md](FORK.md).
 
 ## House rules
 

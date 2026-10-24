@@ -34,6 +34,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { canonicalProjectRoot, getCodeGraphDir } from '../directory';
 
+/** Bytes/parse-window for an oversized hello line — bounded against a malicious peer. */
+export const MAX_HELLO_LINE_BYTES = 4096;
+
 /** Soft upper bound for in-project socket paths. */
 const POSIX_SOCKET_PATH_LIMIT = 100;
 

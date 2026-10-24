@@ -76,7 +76,9 @@ function main(args) {
   fs.copyFileSync(path.join(source, 'codegraph-kernel/prebuilds', `${process.platform}-${process.arch}`, 'codegraph-kernel.node'),
     path.join(lib, 'kernel/codegraph-kernel.node'));
   const metadata = JSON.parse(fs.readFileSync(path.join(source, 'package.json')));
-  metadata.agentworkspace = { root: source, revision };
+  // Running processes compare themselves with the installed release to leave a superseded one (src/mcp/version.ts).
+  metadata.agentworkspace = { root: source, revision,
+    installed: path.join(dataRoot, 'current', 'lib'), launcher: path.join(binRoot, 'codegraph') };
   fs.writeFileSync(path.join(lib, 'package.json'), JSON.stringify(metadata, null, 2) + '\n');
   const lock = JSON.parse(fs.readFileSync(path.join(source, 'package-lock.json')));
   fs.writeFileSync(path.join(lib, 'package-lock.json'), JSON.stringify(lock, null, 2) + '\n');

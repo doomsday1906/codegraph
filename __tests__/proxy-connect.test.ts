@@ -69,6 +69,24 @@ describe('connectWithHello — socket is never left without an error listener (#
     expect(result).toBe('version-mismatch');
   });
 
+  it.runIf(process.platform !== 'win32')('a session that outlived an upgrade attaches to the installed release', async () => {
+    const { sockPath } = await fakeDaemon('1.0.0+aw.installed');
+    const result = await connectWithHello(sockPath, '1.0.0+aw.superseded', { installed: '1.0.0+aw.installed' });
+    expect(result).toBeInstanceOf(net.Socket);
+    cleanups.push(() => (result as net.Socket).destroy());
+  });
+
+  it.runIf(process.platform !== 'win32')('reports a daemon being retired as not up yet', async () => {
+    const { sockPath } = await fakeDaemon('1.0.0+aw.superseded');
+    const seen: number[] = [];
+    const result = await connectWithHello(sockPath, '1.0.0+aw.installed', {
+      installed: '1.0.0+aw.installed',
+      onMismatch: (hello) => { seen.push(hello.pid); return true; },
+    });
+    expect(result).toBeNull();
+    expect(seen).toEqual([process.pid]);
+  });
+
   it.runIf(process.platform !== 'win32')('returns null when no daemon is listening', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-proxy-none-'));
     cleanups.push(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });

@@ -21,12 +21,13 @@
 import * as fs from 'fs';
 import * as net from 'net';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
-import { DaemonClientHello, DaemonHello, MAX_HELLO_LINE_BYTES } from './daemon';
+import type { DaemonClientHello, DaemonHello } from './daemon';
+import { MAX_HELLO_LINE_BYTES } from './daemon-paths';
 import { EARLY_PPID } from './early-ppid';
 import { supervisionLostReason } from './ppid-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
 import { treatStdinFailureAsShutdown } from './stdin-teardown';
-import { CodeGraphRuntimeIdentity as CodeGraphPackageVersion } from './version';
+import { CodeGraphRuntimeIdentity as CodeGraphPackageVersion, installedRuntimeIdentity } from './version';
 import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions } from './session';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { getStaticTools } from './tools';
@@ -155,6 +156,11 @@ export async function runProxy(
 export async function connectWithHello(
   socketPath: string,
   expectedVersion: string = CodeGraphPackageVersion,
+  opts: {
+    installed?: string | null;
+    /** Called for a daemon we cannot use; returning true reports "no daemon yet" (it is being retired). */
+    onMismatch?: (hello: DaemonHello) => boolean;
+  } = {},
 ): Promise<net.Socket | 'version-mismatch' | null> {
   if (process.platform !== 'win32' && !fs.existsSync(socketPath)) return null;
   const socket = net.createConnection(socketPath);
@@ -174,7 +180,13 @@ export async function connectWithHello(
     socket.destroy();
     return null; // no daemon yet — caller should keep polling
   }
-  if (hello.codegraph !== expectedVersion) {
+  // A session that outlived an upgrade moves to the installed release's daemon.
+  const installed = 'installed' in opts ? opts.installed : installedRuntimeIdentity();
+  if (hello.codegraph !== expectedVersion && hello.codegraph !== installed) {
+    if (opts.onMismatch?.(hello)) {
+      socket.destroy();
+      return null;
+    }
     // A daemon IS up but it's the wrong version — definitive, not a "not yet".
     // Don't poll; the caller serves in-process so we never run stale-vs-new.
     process.stderr.write(
@@ -246,7 +258,9 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   // The proxy is long-lived and can serve fallback tool calls in-process. Match
   // direct/daemon mode by killing this launcher if its main thread wedges, so an
   // MCP host retry cannot accumulate abandoned `serve --mcp` wrapper processes.
-  const livenessWatchdog: WatchdogHandle | null = installMainThreadWatchdog();
+  // A pure pipe to the daemon has no such work, so it runs without the extra
+  // watchdog process (see updateWatchdog).
+  let livenessWatchdog: WatchdogHandle | null = installMainThreadWatchdog();
   let daemonStatus: 'connecting' | 'ready' | 'failed' = 'connecting';
   let daemonSocket: net.Socket | null = null;
   let clientInitId: unknown = undefined;   // suppress the daemon's reply to the forwarded initialize
@@ -286,6 +300,15 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
     } catch { /* unparseable — nothing we could re-serve anyway */ }
   };
 
+  const updateWatchdog = (): void => {
+    const pipeOnly = daemonStatus === 'ready' && !engine && retiring.size === 0 && localCalls.size === 0;
+    if (pipeOnly && livenessWatchdog) {
+      livenessWatchdog.stop();
+      livenessWatchdog = null;
+    } else if (!pipeOnly && !livenessWatchdog && !shuttingDown) {
+      livenessWatchdog = installMainThreadWatchdog();
+    }
+  };
   const writeClient = (obj: JsonRpc | string): void => {
     try { process.stdout.write((typeof obj === 'string' ? obj : JSON.stringify(obj)) + '\n'); } catch { /* host gone */ }
   };
@@ -313,6 +336,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
     if (!engine && shuttingDown) throw new Error('codegraph is shutting down');
     if (!engine) {
       engine = deps.makeEngine();
+      updateWatchdog();
       engineReady = engine.ensureInitialized(deps.root).catch(() => { /* degraded */ });
     }
     const current = engine;
@@ -331,6 +355,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
       try { await retired?.stop(); } catch { /* best-effort */ }
     } finally {
       if (retired) retiring.delete(retired);
+      updateWatchdog();
     }
   };
   // Daemon-unavailable fallback: serve a client message in-process.
@@ -529,6 +554,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
       process.stderr.write(
         `[CodeGraph MCP] Shared daemon connection lost; serving this session in-process (degraded), re-serving ${inflight.size} in-flight request(s).\n`
       );
+      updateWatchdog();
       const orphaned = [...inflight.values()];
       inflight.clear();
       for (const line of orphaned) void handleLocally(line);
@@ -551,6 +577,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
       try { socket.write(line + '\n'); } catch { /* ignore */ }
     }
     pending.length = 0;
+    updateWatchdog();
   };
 
   const socket = await connectDaemon();

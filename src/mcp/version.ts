@@ -36,12 +36,37 @@ function readPackageVersion(): string {
 
 export const CodeGraphPackageVersion = readPackageVersion();
 
+/** Exact runtime identity of the package whose `package.json` is at `pkgPath`. */
+function runtimeIdentity(pkgPath: string): string {
+  const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  const revision = parsed.agentworkspace?.revision;
+  return typeof revision === 'string' && /^[a-f0-9]{40}$/.test(revision)
+    ? `${parsed.version}+aw.${revision}` : parsed.version;
+}
+
+const ownPackage = path.join(__dirname, '..', '..', 'package.json');
+
 /** A maintained build must not attach to a different commit's daemon. */
 export const CodeGraphRuntimeIdentity = (() => {
   try {
-    const revision = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')).agentworkspace?.revision;
-    if (typeof revision === 'string' && /^[a-f0-9]{40}$/.test(revision))
-      return `${CodeGraphPackageVersion}+aw.${revision}`;
+    return runtimeIdentity(ownPackage);
   } catch { /* Ordinary upstream installations use the package version. */ }
   return CodeGraphPackageVersion;
 })();
+
+/** Where a maintained deployment keeps the release its launcher starts (scripts/deploy-local.mjs). */
+const deployment: { installed?: unknown; launcher?: unknown } = (() => {
+  try { return JSON.parse(fs.readFileSync(ownPackage, 'utf8')).agentworkspace ?? {}; } catch { return {}; }
+})();
+
+/** The launcher of a maintained deployment; null for other installations. */
+export const InstalledLauncher = typeof deployment.launcher === 'string' ? deployment.launcher : null;
+
+/**
+ * Identity of the release the launcher starts now, or null when unknown. A
+ * process whose own identity differs is superseded: an upgrade happened while it ran.
+ */
+export function installedRuntimeIdentity(): string | null {
+  if (typeof deployment.installed !== 'string') return null;
+  try { return runtimeIdentity(path.join(deployment.installed, 'package.json')); } catch { return null; }
+}

@@ -104,7 +104,48 @@ async function exercise(mode: 'connecting-wedge' | 'fallback-wedge' | 'slow-fall
   }
 }
 
+// A proxy attached to the daemon is a pure pipe: it must not keep a watchdog process per session.
+async function exerciseAttached(): Promise<void> {
+  const child = spawn(process.execPath, ['-e', `
+    const net = require('net'), path = require('path'), os = require('os'), fs = require('fs');
+    const { runLocalHandshakeProxy } = require(${JSON.stringify(MODULE)});
+    const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-pipe-')), 'd.sock');
+    net.createServer(() => {}).listen(sock, () => runLocalHandshakeProxy({
+      root: process.cwd(),
+      getDaemonSocket: () => new Promise((resolve) => { const s = net.createConnection(sock, () => resolve(s)); }),
+      makeEngine: () => { throw new Error('no in-process engine expected'); },
+    }));
+  `], {
+    env: {
+      ...process.env,
+      CODEGRAPH_TELEMETRY: '0', DO_NOT_TRACK: '1', CODEGRAPH_NO_WATCHDOG: '0',
+      CODEGRAPH_MCP_DEBUG: '1', CODEGRAPH_PPID_POLL_MS: '0', CODEGRAPH_STARTUP_HANDSHAKE_TIMEOUT_MS: '0',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', (data) => { stderr += data; });
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  try {
+    await until(() => /armed \(child pid \d+\)/.test(stderr) || exited());
+    const watchdogPid = Number(/armed \(child pid (\d+)\)/.exec(stderr)?.[1]);
+    expect(watchdogPid, stderr).toBeGreaterThan(0);
+    await until(() => !alive(watchdogPid) || exited());
+    expect(exited(), stderr).toBe(false);
+    expect(alive(watchdogPid)).toBe(false);
+  } finally {
+    child.stdin.end();
+    if (!exited()) {
+      try { await until(exited, 3000); } catch { child.kill('SIGKILL'); await until(exited); }
+    }
+  }
+}
+
 describe('local proxy liveness (#943)', () => {
+  it.runIf(process.platform !== 'win32')('stops its watchdog process once it is a pure pipe to the daemon', async () => {
+    await exerciseAttached();
+  }, 20000);
+
   it.runIf(process.platform === 'win32')('terminates a wedged proxy during daemon connection and reaps its watchdog', async () => {
     await exercise('connecting-wedge');
   }, 20000);

@@ -39,14 +39,9 @@ import * as path from 'path';
 import { spawn, StdioOptions } from 'child_process';
 import { resolveServerRoot, getCodeGraphDir } from '../directory';
 import { StdioTransport } from './transport';
-import { MCPEngine } from './engine';
-import { MCPSession } from './session';
-import {
-  Daemon,
-  clearStaleDaemonLock,
-  isProcessAlive,
-  tryAcquireDaemonLock,
-} from './daemon';
+import type { MCPEngine } from './engine';
+import type { Daemon, DaemonHello } from './daemon';
+import type { MCPSession } from './session';
 import { clearStaleDaemonArtifacts } from './daemon-registry';
 import { connectWithHello, runLocalHandshakeProxy } from './proxy';
 import {
@@ -71,6 +66,13 @@ import { installMainThreadWatchdog, WatchdogHandle } from './liveness-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
 import { treatStdinFailureAsShutdown } from './stdin-teardown';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
+import { CodeGraphRuntimeIdentity, InstalledLauncher, installedRuntimeIdentity } from './version';
+
+// Loaded on demand: a proxy only pipes to the daemon, and loading the engine cost every proxy ~14 MB.
+/* eslint-disable @typescript-eslint/no-require-imports */
+const loadEngine = (): typeof import('./engine') => require('./engine');
+const loadDaemon = (): typeof import('./daemon') => require('./daemon');
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 /** Default worker cap for a direct (single-client) session; see MCPEngineOptions.queryPoolDefaultMax (#1465). */
 const DIRECT_QUERY_POOL_MAX = 2;
@@ -98,7 +100,7 @@ const TAKEOVER_RETRY_DELAY_MS = 100;
  */
 function readOnlyFallback(holder: string): MCPEngine {
   process.stderr.write(`[CodeGraph MCP] Serving reads in-process without auto-sync: ${holder}.\n`);
-  return new MCPEngine({ readOnly: true });
+  return new (loadEngine().MCPEngine)({ readOnly: true });
 }
 
 /**
@@ -108,6 +110,7 @@ function readOnlyFallback(holder: string): MCPEngine {
  */
 function makeFallbackEngine(root: string): MCPEngine {
   assertNoRebuild(root);
+  const { isProcessAlive } = loadDaemon();
   let existing: ReturnType<typeof decodeLockInfo> = null;
   try {
     existing = decodeLockInfo(fs.readFileSync(getDaemonPidPath(root), 'utf8'));
@@ -135,7 +138,7 @@ function makeFallbackEngine(root: string): MCPEngine {
   if (existing && isProcessAlive(existing.pid)) {
     return readOnlyFallback(`live daemon PID ${existing.pid} holds the project lock`);
   }
-  return new MCPEngine({ writerLockRoot: root, queryPool: true, queryPoolDefaultMax: DIRECT_QUERY_POOL_MAX });
+  return new (loadEngine().MCPEngine)({ writerLockRoot: root, queryPool: true, queryPoolDefaultMax: DIRECT_QUERY_POOL_MAX });
 }
 
 /**
@@ -267,9 +270,12 @@ function spawnDetachedDaemon(root: string): void {
     // where a long-dead session's host pid would trigger spurious shutdowns.
     const env: NodeJS.ProcessEnv = { ...process.env, [DAEMON_INTERNAL_ENV]: '1' };
     delete env[HOST_PPID_ENV];
+    // A session that outlived an upgrade starts the installed release's daemon, which it can attach to.
+    const launcher = InstalledLauncher !== null && installedRuntimeIdentity() !== CodeGraphRuntimeIdentity ? InstalledLauncher : null;
+    const args = ['serve', '--mcp', '--path', root];
     const child = spawn(
-      process.execPath,
-      [...process.execArgv, scriptPath, 'serve', '--mcp', '--path', root],
+      launcher ?? process.execPath,
+      launcher ? args : [...process.execArgv, scriptPath, ...args],
       {
         detached: true,
         stdio,
@@ -284,6 +290,21 @@ function spawnDetachedDaemon(root: string): void {
       try { fs.closeSync(logFd); } catch { /* ignore */ }
     }
   }
+}
+
+/**
+ * As the installed release, stop a superseded release's daemon so this project
+ * shares one current daemon instead of serving every new session in-process.
+ * Its own sessions keep working: they re-attach to the installed daemon.
+ */
+const retiredDaemons = new Set<number>();
+function retireSupersededDaemon(hello: DaemonHello): boolean {
+  if (installedRuntimeIdentity() !== CodeGraphRuntimeIdentity || hello.pid <= 0 || hello.pid === process.pid) return false;
+  if (retiredDaemons.has(hello.pid)) return true;
+  try { process.kill(hello.pid, 'SIGTERM'); } catch { return false; }
+  retiredDaemons.add(hello.pid);
+  process.stderr.write(`[CodeGraph MCP] Stopped daemon pid ${hello.pid} of superseded release ${hello.codegraph}.\n`);
+  return true;
 }
 
 /**
@@ -443,7 +464,9 @@ export class MCPServer {
       this.writerLockRoot = writerRoot;
     }
 
-    this.engine = new MCPEngine({ queryPool: true, queryPoolDefaultMax: DIRECT_QUERY_POOL_MAX });
+    this.engine = new (loadEngine().MCPEngine)({ queryPool: true, queryPoolDefaultMax: DIRECT_QUERY_POOL_MAX });
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { MCPSession } = require('./session') as typeof import('./session');
     const transport = new StdioTransport({ exitOnClose: false, onClose: () => { void this.stop(); } });
     this.session = new MCPSession(transport, this.engine, {
       explicitProjectPath: this.projectPath,
@@ -495,6 +518,7 @@ export class MCPServer {
     // kills/restarts can be placed in time (#1431 — the log was undatable).
     timestampStderrLines();
     const root = resolveDaemonRoot(this.projectPath) ?? this.projectPath ?? process.cwd();
+    const { Daemon, clearStaleDaemonLock, isProcessAlive, tryAcquireDaemonLock } = loadDaemon();
     for (let attempt = 0; attempt < TAKEOVER_MAX_RETRIES; attempt++) {
       const lock = tryAcquireDaemonLock(root);
 
@@ -575,7 +599,7 @@ export class MCPServer {
     const candidates = getDaemonSocketCandidates(root);
     const connectAnyCandidate = async (): Promise<Awaited<ReturnType<typeof connectWithHello>>> => {
       for (const candidate of candidates) {
-        const s = await connectWithHello(candidate);
+        const s = await connectWithHello(candidate, undefined, { onMismatch: retireSupersededDaemon });
         // A wrong-version daemon IS up — definitive; propagate so the caller
         // serves in-process instead of spawning + polling for 6s. Don't keep
         // probing fallbacks past it.
@@ -622,7 +646,7 @@ export class MCPServer {
         originalPpid: this.originalPpid,
         currentPpid: process.ppid,
         hostPpid: this.hostPpid,
-        isAlive: isProcessAlive,
+        isAlive: loadDaemon().isProcessAlive,
       });
       if (reason) {
         process.stderr.write(
@@ -646,6 +670,4 @@ function sleep(ms: number): Promise<void> {
 // Export for use in CLI
 export { StdioTransport } from './transport';
 export { tools, ToolHandler } from './tools';
-// Surface a few daemon-mode bits for tests + diagnostics.
-export { Daemon } from './daemon';
 export { CodeGraphPackageVersion } from './version';

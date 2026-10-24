@@ -53,6 +53,7 @@ import {
   getDaemonPidPath,
   getDaemonSocketCandidates,
   getDaemonSocketPath,
+  MAX_HELLO_LINE_BYTES,
 } from './daemon-paths';
 import { CodeGraphRuntimeIdentity as CodeGraphPackageVersion } from './version';
 import {
@@ -120,9 +121,6 @@ const DEFAULT_CLIENT_SWEEP_MS = 30_000;
 
 /** How long the daemon waits for the optional client-hello before proceeding without it. */
 const CLIENT_HELLO_TIMEOUT_MS = 3_000;
-
-/** Bytes/parse-window for an oversized hello line — bounded against a malicious peer. */
-const MAX_HELLO_LINE_BYTES = 4096;
 
 /**
  * Wire format for the one-shot hello line the daemon emits on every new
@@ -962,6 +960,3 @@ function readClientHello(
     socket.on('close', onEnd);
   });
 }
-
-/** Exported for test stubs that need to bound the hello-line read. */
-export { MAX_HELLO_LINE_BYTES };

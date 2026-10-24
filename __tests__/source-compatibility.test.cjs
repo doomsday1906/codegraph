@@ -22,3 +22,11 @@ test('source-built native parsing remains available in the installed release', (
 test('maintained builds retain the 2 MiB default for existing worktrees', () => {
   assert.equal(require(path.join(dist, 'file-limits.js')).MAX_SOURCE_FILE_SIZE_BYTES, 2097152);
 });
+
+test('an MCP proxy loads neither the engine nor the daemon it pipes to', () => {
+  const loaded = require('node:child_process').execFileSync(process.execPath, ['-e', `
+    require(${JSON.stringify(path.join(dist, 'mcp/index.js'))});
+    process.stdout.write(Object.keys(require.cache).filter((f) => /mcp[\\/](engine|daemon)\\.js$/.test(f)).join(','));
+  `], { encoding: 'utf8' });
+  assert.equal(loaded, '');
+});

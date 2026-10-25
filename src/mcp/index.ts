@@ -270,6 +270,9 @@ function spawnDetachedDaemon(root: string): void {
     // where a long-dead session's host pid would trigger spurious shutdowns.
     const env: NodeJS.ProcessEnv = { ...process.env, [DAEMON_INTERNAL_ENV]: '1' };
     delete env[HOST_PPID_ENV];
+    // V8's default young generation keeps ~70 MB of heap pages resident after an
+    // explore burst; a 1 MB semi-space measured no slower. NODE_OPTIONS also reaches the launcher's node.
+    env.NODE_OPTIONS = `${env.NODE_OPTIONS ?? ''} --max-semi-space-size=1`.trim();
     // A session that outlived an upgrade starts the installed release's daemon, which it can attach to.
     const launcher = InstalledLauncher !== null && installedRuntimeIdentity() !== CodeGraphRuntimeIdentity ? InstalledLauncher : null;
     const args = ['serve', '--mcp', '--path', root];

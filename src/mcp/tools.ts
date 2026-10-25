@@ -3468,7 +3468,7 @@ export class ToolHandler {
    * whose qualifiedName contains another named token (`PmsProductServiceImpl::list`),
    * dropping unrelated `OmsOrderService::list`.
    */
-  private buildFlowFromNamedSymbols(cg: CodeGraph, query: string): { text: string; pathNodeIds: Set<string>; namedNodeIds: Set<string>; uniqueNamedNodeIds: Set<string>; spineCallSites: Map<string, number> } {
+  private async buildFlowFromNamedSymbols(cg: CodeGraph, query: string): Promise<{ text: string; pathNodeIds: Set<string>; namedNodeIds: Set<string>; uniqueNamedNodeIds: Set<string>; spineCallSites: Map<string, number> }> {
     // spineCallSites: for each spine node, the line where it CALLS the next hop —
     // lets the source assembler window an oversize spine method (e.g. n8n's 962-line
     // processRunExecutionData) to the call site instead of dumping the whole body.
@@ -3636,6 +3636,8 @@ export class ToolHandler {
       if (!hasMain && synthLines.length === 0 && !boundaryText && !polyText) return identityOnly();
       const out: string[] = [];
       if (hasMain) {
+        // Only rendered callers need synchronous guards; unrelated grammars retain large WASM heaps.
+        await warmBranchGuardGrammars(best!.slice(0, -1).map((step) => step.node.language));
         out.push('**Flow (call path among the symbols you queried)**', '');
         for (let i = 0; i < best!.length; i++) {
           const step = best![i]!;
@@ -5127,10 +5129,7 @@ export class ToolHandler {
     // Compute the flow spine once — used both to prepend the Flow section (below)
     // and to gate adaptive source sizing: files on the spine get full source,
     // off-spine peers skeletonize.
-    // The Flow section labels each hop with its branch conditions; that read
-    // is synchronous, so the grammars it needs are loaded here, once.
-    await warmBranchGuardGrammars();
-    const flow = this.buildFlowFromNamedSymbols(cg, matchQuery);
+    const flow = await this.buildFlowFromNamedSymbols(cg, matchQuery);
 
     // The symbols the question is about: exact targets, the named ones, the spine.
     const questionIds = new Set([...exactNodeIds, ...flow.pathNodeIds, ...flow.namedNodeIds]);

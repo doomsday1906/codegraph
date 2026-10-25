@@ -589,6 +589,41 @@ describe('MCP query pool with real projects (#1465)', () => {
     }
   }, 30000);
 
+  it('releases idle default and cross-project databases and reads the next committed index', async () => {
+    const alpha = await indexProject('alpha', 'alphaSymbol');
+    const beta = await indexProject('beta', 'betaSymbol');
+    pool = new QueryPool({ root: alpha, size: 1,
+      createWorker: () => new Worker(path.join(runtimeDist, 'mcp/query-worker.js'), { workerData: { root: alpha } }),
+    });
+    const heldIndexes = () => {
+      if (process.platform !== 'linux') return [];
+      return fs.readdirSync('/proc/self/fd').flatMap((fd) => {
+        try {
+          const target = fs.readlinkSync(`/proc/self/fd/${fd}`);
+          return target.startsWith(tempDir) && target.includes('/.codegraph/codegraph.db') ? [target] : [];
+        } catch { return []; }
+      });
+    };
+    for (const [projectPath, symbol] of [[alpha, 'alphaSymbol'], [beta, 'betaSymbol'], [alpha, 'alphaSymbol']]) {
+      const result = await pool.run('codegraph_search', { projectPath, query: symbol });
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0].text).toContain(symbol);
+      expect(heldIndexes()).toEqual([]);
+      expect(pool.liveWorkers).toBe(1);
+    }
+    const invalid = await pool.run('codegraph_search', { query: '' });
+    expect(invalid.isError).toBe(true);
+    expect(heldIndexes()).toEqual([]);
+    fs.writeFileSync(path.join(alpha, 'app.ts'), 'export function replacementSymbol() { return 43; }\n');
+    const writer = CodeGraph.openSync(alpha);
+    try { await writer.indexAll(); } finally { writer.close(); }
+    const next = await pool.run('codegraph_search', { query: 'replacementSymbol' });
+    expect(next.isError).toBeFalsy();
+    expect(next.content[0].text).toContain('replacementSymbol');
+    expect(heldIndexes()).toEqual([]);
+    expect(pool.liveWorkers).toBe(1);
+  }, 30000);
+
   it('never terminates a real worker before it has started', async () => {
     const alpha = await indexProject('alpha', 'alphaSymbol');
     const startedWhenEnded: boolean[] = [];

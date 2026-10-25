@@ -22,6 +22,7 @@
  */
 
 import { parentPort, workerData } from 'worker_threads';
+import type CodeGraph from '../index';
 import type { ToolResult } from './tools';
 
 interface WorkerInit {
@@ -46,15 +47,11 @@ if (parentPort) {
   const port = parentPort;
   const { root } = workerData as WorkerInit;
 
-  // Open the default project's READ connection once, if present. Other repos are
-  // opened lazily on first cross-project (projectPath) call by the ToolHandler's
-  // own per-handler cache. openSync does not start a watcher — workers are pure
-  // readers; the single watcher/writer stays on the daemon's main thread.
-  let handler: InstanceType<typeof import('./tools').ToolHandler> | null = null;
+  // Warm imports and validate the root, without retaining an idle SQLite mapping.
   let initError: string | null = null;
   try {
-    const cg = root ? loadCodeGraph().openSync(root) : null;
-    handler = new (loadToolHandler())(cg);
+    loadToolHandler();
+    if (root) loadCodeGraph().openSync(root, { readOnly: true }).close();
   } catch (err) {
     initError = err instanceof Error ? err.message : String(err);
   }
@@ -75,7 +72,7 @@ if (parentPort) {
     if (msg.toolName === '__test_crash__' && process.env.CODEGRAPH_QUERY_WORKER_ALLOW_TEST_CRASH === '1') {
       process.exit(13);
     }
-    if (!handler) {
+    if (initError !== null) {
       port.postMessage({
         type: 'result',
         id: msg.id,
@@ -83,18 +80,30 @@ if (parentPort) {
       });
       return;
     }
+    let cg: CodeGraph | null = null;
+    let handler: InstanceType<typeof import('./tools').ToolHandler> | null = null;
+    let result: ToolResult;
     try {
+      cg = root ? loadCodeGraph().openSync(root, { readOnly: true }) : null;
+      handler = new (loadToolHandler())(cg);
       // executeReadTool already classifies NotIndexed/PathRefusal/internal errors
       // into a ToolResult and never throws — the catch is belt-and-suspenders.
-      const result: ToolResult = await handler.executeReadTool(msg.toolName, msg.args);
-      port.postMessage({ type: 'result', id: msg.id, result });
+      result = await handler.executeReadTool(msg.toolName, msg.args);
     } catch (err) {
-      port.postMessage({
-        type: 'result',
-        id: msg.id,
-        result: errorResult(err instanceof Error ? err.message : String(err)),
-      });
+      result = errorResult(err instanceof Error ? err.message : String(err));
+    } finally {
+      try {
+        try {
+          // Keep modules warm; default and cross-project page caches belong to this call.
+          await handler?.closeAll();
+        } finally {
+          cg?.close();
+        }
+      } catch (err) {
+        result = errorResult(err instanceof Error ? err.message : String(err));
+      }
     }
+    port.postMessage({ type: 'result', id: msg.id, result });
   };
 }
 

@@ -51,6 +51,23 @@ const DEFAULT_DAEMON_RETRY_MS = 5_000;
 const DEFAULT_DAEMON_RETRY_MAX_MS = 300_000;
 
 /**
+ * A proxy with no MCP traffic for this long sleeps: it replaces itself (same
+ * pid, same stdio) with a ~1 MB shell that waits for the host's next byte and
+ * then re-executes the proxy. Long-lived hosts (Codex app-server, `opencode
+ * serve`) keep a finished thread's pipe open forever and do not relaunch a
+ * server that exits, so exiting would break a resumed thread; sleeping also
+ * drops the daemon connection so an unused project daemon can idle out.
+ * Tunable through `CODEGRAPH_MCP_IDLE_SLEEP_MS` (`0` turns sleeping off).
+ */
+const DEFAULT_IDLE_SLEEP_MS = 1_200_000;
+/** Carries the host's `initialize` line (base64) into the re-executed proxy. */
+const RESUME_INIT_ENV = 'CODEGRAPH_MCP_RESUME_INIT';
+/** Carries the byte the sleeping shell consumed (hex) into the re-executed proxy. */
+const RESUME_BYTE_ENV = 'CODEGRAPH_MCP_RESUME_BYTE';
+// $0 is unused; "$@" is the proxy's own command line. EOF (host gone) exits.
+const SLEEP_SCRIPT = `b=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); [ -n "$b" ] || exit 0; export ${RESUME_BYTE_ENV}=$b; exec "$@"`;
+
+/**
  * Longest the proxy waits, once it is shutting down, for its in-process engines
  * to stop before exiting anyway. An engine's stop waits up to
  * {@link WORKER_START_SETTLE_MS} for a query worker still starting up (exiting
@@ -265,6 +282,16 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   let daemonSocket: net.Socket | null = null;
   let clientInitId: unknown = undefined;   // suppress the daemon's reply to the forwarded initialize
   let clientInitLine: string | undefined;  // replayed to a daemon that comes up mid-session (#2277)
+  // A proxy re-executed after sleeping (the idle sleep below) was initialized before.
+  const resumeInit = process.env[RESUME_INIT_ENV];
+  const resumeByte = process.env[RESUME_BYTE_ENV] ?? '';
+  delete process.env[RESUME_INIT_ENV];
+  delete process.env[RESUME_BYTE_ENV];
+  const resumed = resumeInit !== undefined;
+  if (resumed) {
+    clientInitLine = Buffer.from(resumeInit, 'base64').toString('utf8');
+    try { clientInitId = (JSON.parse(clientInitLine) as JsonRpc).id; } catch { /* replay unsuppressed */ }
+  }
   // Telemetry attribution for the in-process fallback only — calls routed to
   // the daemon are counted by the daemon's own session (which receives the
   // forwarded initialize, clientInfo included), never double-counted here.
@@ -282,6 +309,8 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   let retryDelayMs = retryBaseMs;
   let retryTimer: NodeJS.Timeout | null = null;
   let attachedAt = 0;
+  let lastActivityAt = Date.now();
+  const idleSleepMs = parseDelayMs(process.env.CODEGRAPH_MCP_IDLE_SLEEP_MS, DEFAULT_IDLE_SLEEP_MS);
   // Requests forwarded to the daemon and not yet answered, keyed by JSON-RPC id.
   // If the daemon dies mid-session (#662 — e.g. an MCP host SIGTERM's it when a
   // new session starts), these would otherwise hang forever; we re-serve them
@@ -402,12 +431,13 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   };
 
   // ---- client (stdin) ----
-  let stdinBuf = '';
+  let stdinBuf = Buffer.from(resumeByte, 'hex').toString('utf8');
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk: string) => {
     // Nothing is served once shutdown starts: a call now could start an engine
     // shutdown() never sees, and the process exits as soon as the others stop.
     if (shuttingDown) return;
+    lastActivityAt = Date.now();
     stdinBuf += chunk;
     let idx: number;
     while ((idx = stdinBuf.indexOf('\n')) !== -1) {
@@ -459,7 +489,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   // (#1185). A server that never receives a single byte isn't serving anyone.
   // Armed after the stdin 'data' consumer above so no bytes are emitted while
   // only the backstop's listener exists.
-  armStartupHandshakeTimeout(() => {
+  if (!resumed) armStartupHandshakeTimeout(() => {
     process.stderr.write(
       '[CodeGraph MCP] No MCP traffic since startup; assuming an abandoned launch and shutting down (#1185). ' +
       'Tune with CODEGRAPH_STARTUP_HANDSHAKE_TIMEOUT_MS (0 disables).\n'
@@ -523,6 +553,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
     let sockBuf = '';
     socket.setEncoding('utf8');
     socket.on('data', (chunk: string) => {
+      lastActivityAt = Date.now();
       sockBuf += chunk;
       let idx: number;
       while ((idx = sockBuf.indexOf('\n')) !== -1) {
@@ -582,12 +613,34 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
 
   const socket = await connectDaemon();
   if (socket) {
-    attachDaemon(socket, false);
+    attachDaemon(socket, resumed);
   } else if (!shuttingDown) {
     daemonStatus = 'failed';
     process.stderr.write('[CodeGraph MCP] Shared daemon unavailable; serving this session in-process (degraded).\n');
     serveBufferedLocally();
     scheduleDaemonRetry();
+  }
+
+  // Sleep only as a pure pipe with nothing pending, so no request or reply is lost.
+  const execve = (process as unknown as { execve?: (file: string, args: string[], env: NodeJS.ProcessEnv) => never }).execve;
+  if (idleSleepMs > 0 && typeof execve === 'function' && process.platform !== 'win32') {
+    const sleepTimer = setInterval(() => {
+      if (shuttingDown || Date.now() - lastActivityAt < idleSleepMs || clientInitLine === undefined) return;
+      if (daemonStatus !== 'ready' || engine || retiring.size || localCalls.size || inflight.size || pending.length || stdinBuf) return;
+      // Node leaves stdin non-blocking; the shell's read needs it blocking.
+      const stdinHandle = (process.stdin as unknown as { _handle?: { setBlocking?: (blocking: boolean) => number } })._handle;
+      if (typeof stdinHandle?.setBlocking !== 'function') { clearInterval(sleepTimer); return; }
+      try {
+        stdinHandle.setBlocking(true);
+        execve('/bin/sh', ['sh', '-c', SLEEP_SCRIPT, 'sh', process.execPath, ...process.execArgv, ...process.argv.slice(1)],
+          { ...process.env, [RESUME_INIT_ENV]: Buffer.from(clientInitLine).toString('base64') });
+      } catch (err) {
+        stdinHandle.setBlocking(false);
+        clearInterval(sleepTimer);
+        process.stderr.write(`[CodeGraph MCP] Could not sleep while idle (${err instanceof Error ? err.message : String(err)}); staying awake.\n`);
+      }
+    }, Math.min(idleSleepMs, 60_000));
+    sleepTimer.unref?.();
   }
 
   await new Promise<void>(() => { /* stdin keeps the loop alive; exit via shutdown() */ });

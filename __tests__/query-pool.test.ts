@@ -388,6 +388,32 @@ describe('QueryPool idle retirement', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('retires the last warm worker after ten idle minutes and restarts it on demand', async () => {
+    const workers: FakeWorker[] = [];
+    const pool = new QueryPool({ root: '/x', size: 3, createWorker: () => {
+      const w = new FakeWorker(() => ({ result: ok('served') }));
+      w.terminate = async () => { w.alive = false; w.emitExit(); return 1; };
+      workers.push(w);
+      return w;
+    } });
+    try {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(pool.ready).toBe(true);
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(pool.liveWorkers).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(workers.some(w => w.alive)).toBe(false);
+      expect(pool.ready).toBe(false); // Callers run in-process while the asked-for worker starts.
+      expect(pool.liveWorkers).toBe(1);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(pool.ready).toBe(true);
+      const call = pool.run('codegraph_explore', {});
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await call).toEqual(ok('served'));
+      expect(pool.healthy).toBe(true);
+    } finally { await pool.destroy(); }
+  });
+
   it('never retires active or starting workers', async () => {
     const workers: FakeWorker[] = [];
     let release!: (result: ToolResult) => void;

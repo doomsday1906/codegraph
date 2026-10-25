@@ -14,7 +14,8 @@
  *     single-agent session pays for one connection and a 10-subagent burst grows
  *     to the core budget.
  *   - idle shrink: excess workers release their connections and heaps after a
- *     minute idle; one warm worker remains for the next call.
+ *     minute idle; the last warm worker goes after ten idle minutes, and calls
+ *     run in-process while its replacement starts.
  *   - crash recovery: a dead worker is respawned and its in-flight call retried
  *     once; a poison call that keeps crashing fails gracefully (never wedges the
  *     pool). A crash budget trips a circuit breaker (`healthy` → false) so the
@@ -54,6 +55,8 @@ const DEFAULT_BUSY_TIMEOUT_MS = 45_000; // < the ~60s MCP client request timeout
 const MAX_POOL_SIZE = 16;
 
 const IDLE_WORKER_TIMEOUT_MS = 60_000;
+// The last warm worker holds ~80 MB per daemon, and a workstation runs a daemon per lane.
+const LAST_WORKER_IDLE_MS = 600_000;
 
 /**
  * Total worker deaths before the pool declares itself unhealthy and the caller
@@ -221,6 +224,8 @@ export class QueryPool {
    * lifetime — later crash-respawn gaps are covered by retry + backstop.
    */
   get ready(): boolean {
+    // A caller asking with no workers left starts one and runs in-process meanwhile.
+    if (!this.destroyed && this.workers.size === 0 && this.healthy) this.spawnOne();
     return this.everReady && !this.destroyed;
   }
   private everReady = false;
@@ -271,15 +276,23 @@ export class QueryPool {
 
   private park(w: PoolWorker): void {
     this.idle.push(w);
+    this.armIdleTimer(w, IDLE_WORKER_TIMEOUT_MS, false);
+  }
+
+  private armIdleTimer(w: PoolWorker, ms: number, last: boolean): void {
     const timer = setTimeout(() => {
       this.idleTimers.delete(w);
-      if (this.idle.length <= 1) return;
+      if (!last && this.idle.length <= 1) {
+        this.armIdleTimer(w, LAST_WORKER_IDLE_MS - ms, true);
+        return;
+      }
       this.idle = this.idle.filter(x => x !== w);
       this.workers.delete(w); // Intentional termination must not trigger crash recovery.
+      if (this.workers.size === 0) this.everReady = false;
       const retirement = this.terminateStarted(w);
       this.retirements.add(retirement);
       void retirement.then(() => this.retirements.delete(retirement));
-    }, IDLE_WORKER_TIMEOUT_MS);
+    }, ms);
     timer.unref?.();
     this.idleTimers.set(w, timer);
   }

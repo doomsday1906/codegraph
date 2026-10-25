@@ -68,6 +68,8 @@ describe.skipIf(process.platform === 'win32')('idle proxy sleep', () => {
       // Idle: the daemon connection drops and the same pid becomes a shell.
       await until(() => child.exitCode !== null || (connections.length === 1 && cmdline() === 'sh'));
       expect(child.exitCode, stderr).toBeNull();
+      // The shell waits with its builtin read: no helper processes.
+      expect(fs.readFileSync(`/proc/${child.pid}/task/${child.pid}/children`, 'utf8').trim()).toBe('');
       expect(child.exitCode).toBeNull();
 
       send({ id: 3, method: 'tools/call', params: { name: 'x', arguments: {} } });

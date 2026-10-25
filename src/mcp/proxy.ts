@@ -52,20 +52,24 @@ const DEFAULT_DAEMON_RETRY_MAX_MS = 300_000;
 
 /**
  * A proxy with no MCP traffic for this long sleeps: it replaces itself (same
- * pid, same stdio) with a ~1 MB shell that waits for the host's next byte and
- * then re-executes the proxy. Long-lived hosts (Codex app-server, `opencode
+ * pid, same stdio) with a ~100 kB shell that waits for the host's next line
+ * and then re-executes the proxy. Long-lived hosts (Codex app-server, `opencode
  * serve`) keep a finished thread's pipe open forever and do not relaunch a
  * server that exits, so exiting would break a resumed thread; sleeping also
  * drops the daemon connection so an unused project daemon can idle out.
+ * Five minutes: in real Claude sessions 31% of next codegraph calls came within
+ * 5 minutes and only 40% within 20, so waiting longer mostly holds memory.
  * Tunable through `CODEGRAPH_MCP_IDLE_SLEEP_MS` (`0` turns sleeping off).
  */
-const DEFAULT_IDLE_SLEEP_MS = 1_200_000;
+const DEFAULT_IDLE_SLEEP_MS = 300_000;
 /** Carries the host's `initialize` line (base64) into the re-executed proxy. */
 const RESUME_INIT_ENV = 'CODEGRAPH_MCP_RESUME_INIT';
-/** Carries the byte the sleeping shell consumed (hex) into the re-executed proxy. */
-const RESUME_BYTE_ENV = 'CODEGRAPH_MCP_RESUME_BYTE';
-// $0 is unused; "$@" is the proxy's own command line. EOF (host gone) exits.
-const SLEEP_SCRIPT = `b=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); [ -n "$b" ] || exit 0; export ${RESUME_BYTE_ENV}=$b; exec "$@"`;
+/** Carries the line the sleeping shell read into the re-executed proxy. */
+const RESUME_LINE_ENV = 'CODEGRAPH_MCP_RESUME_LINE';
+// The builtin `read` takes exactly one line and needs no helper process. "$@" is
+// the proxy's own command line; EOF with nothing read (host gone) exits.
+// shortcut: a line over 128 KiB (Linux env string limit) fails the exec; MCP requests are far smaller.
+const SLEEP_SCRIPT = `IFS= read -r l || [ -n "$l" ] || exit 0; export ${RESUME_LINE_ENV}="$l"; exec "$@"`;
 
 /**
  * Longest the proxy waits, once it is shutting down, for its in-process engines
@@ -284,9 +288,9 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   let clientInitLine: string | undefined;  // replayed to a daemon that comes up mid-session (#2277)
   // A proxy re-executed after sleeping (the idle sleep below) was initialized before.
   const resumeInit = process.env[RESUME_INIT_ENV];
-  const resumeByte = process.env[RESUME_BYTE_ENV] ?? '';
+  const resumeLine = process.env[RESUME_LINE_ENV];
   delete process.env[RESUME_INIT_ENV];
-  delete process.env[RESUME_BYTE_ENV];
+  delete process.env[RESUME_LINE_ENV];
   const resumed = resumeInit !== undefined;
   if (resumed) {
     clientInitLine = Buffer.from(resumeInit, 'base64').toString('utf8');
@@ -431,9 +435,9 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   };
 
   // ---- client (stdin) ----
-  let stdinBuf = Buffer.from(resumeByte, 'hex').toString('utf8');
+  let stdinBuf = resumeLine === undefined ? '' : resumeLine + '\n';
   process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (chunk: string) => {
+  const onStdinData = (chunk: string): void => {
     // Nothing is served once shutdown starts: a call now could start an engine
     // shutdown() never sees, and the process exits as soon as the others stop.
     if (shuttingDown) return;
@@ -477,7 +481,10 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
         routeToDaemon(line);
       }
     }
-  });
+  };
+  process.stdin.on('data', onStdinData);
+  // The sleeping shell already read this line; serve it now.
+  if (resumeLine !== undefined) onStdinData('');
   // Shut down when stdin ends/closes — and also on a stdin `'error'`, which a
   // socket-backed stdin (the VS Code stdio shape) can emit on client death
   // instead of a clean close; destroying the stream stops a hung fd from

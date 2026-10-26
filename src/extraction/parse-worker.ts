@@ -15,7 +15,7 @@ try {
 
 import { parentPort } from 'worker_threads';
 import { extractFromSource } from './tree-sitter';
-import { detectLanguage, loadGrammarsForLanguages, resetParser } from './grammars';
+import { detectLanguage, initGrammars, loadGrammarsForLanguages, resetParser } from './grammars';
 import { tryKernelExtractRaw } from './kernel';
 import { commonJsRequireRefs } from './commonjs-requires';
 import { getAllFrameworkResolvers, getApplicableFrameworks } from '../resolution/frameworks';
@@ -65,12 +65,12 @@ import type { Language, ExtractionResult } from '../types';
 
 const PARSER_RESET_INTERVAL = 5000;
 const parseCounts = new Map<Language, number>();
+let grammarBuffers: Record<string, Uint8Array> | undefined;
 
 parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: string; content?: string; languages?: Language[]; frameworkNames?: string[]; language?: Language; grammarBuffers?: Record<string, Uint8Array> }) => {
   if (msg.type === 'load-grammars') {
-    // Grammar WASM bytes pre-read by the main thread (when provided) make this
-    // a memory load instead of a per-spawn disk read — see issue #1231.
-    await loadGrammarsForLanguages(msg.languages!, msg.grammarBuffers);
+    grammarBuffers = msg.grammarBuffers;
+    await initGrammars();
     parentPort!.postMessage({ type: 'grammars-loaded' });
   } else if (msg.type === 'parse') {
     const { id, filePath, content, frameworkNames } = msg;
@@ -113,7 +113,12 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
           };
         }
       }
-      result ??= extractFromSource(filePath!, content!, language, frameworkNames);
+      if (!result) {
+        // Native parses need no WASM grammars; fallback loads only this file's languages.
+        await loadGrammarsForLanguages([language], grammarBuffers);
+        parentPort!.postMessage({ type: 'parse-ready' });
+        result = extractFromSource(filePath!, content!, language, frameworkNames);
+      }
 
       // Periodic parser reset to reclaim WASM heap memory
       const count = (parseCounts.get(language) ?? 0) + 1;

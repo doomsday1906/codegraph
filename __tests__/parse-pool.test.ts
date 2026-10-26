@@ -47,6 +47,7 @@ class FakeWorker implements ParsePoolWorker {
       return;
     }
     if (m.type !== 'parse') return;
+    this.msgCb?.({ type: 'parse-ready' });
     const action = this.behavior(m as ParseMsg);
     if ('crash' in action) {
       this.alive = false;
@@ -258,12 +259,20 @@ class SlowLoadWorker implements ParsePoolWorker {
   private exitCb?: (code: number) => void;
   loadedAt: number | null = null;
   terminatedAt: number | null = null;
-  constructor(private loadMs: number | null) {}
+  constructor(private loadMs: number | null, private parseLoadMs?: number) {}
   on(event: string, cb: (...args: any[]) => void): void {
     if (event === 'message') this.msgCb = cb;
     else if (event === 'exit') this.exitCb = cb;
   }
   postMessage(msg: unknown): void {
+    if ((msg as { type: string }).type === 'parse' && this.parseLoadMs !== undefined) {
+      this.loadedAt = null;
+      setTimeout(() => {
+        this.loadedAt = performance.now();
+        this.msgCb?.({ type: 'parse-ready' });
+      }, this.parseLoadMs);
+      return;
+    }
     if ((msg as { type: string }).type !== 'load-grammars' || this.loadMs === null) return;
     setTimeout(() => {
       if (this.terminatedAt !== null) return;
@@ -288,6 +297,17 @@ describe('teardown never terminates a worker mid-load', () => {
     await pool.destroy();
     expect(w.loadedAt).not.toBeNull();
     expect(w.terminatedAt).not.toBeNull();
+    expect(w.terminatedAt!).toBeGreaterThanOrEqual(w.loadedAt!);
+  });
+
+  it('also waits for a fallback grammar loaded by the current parse', async () => {
+    const w = new SlowLoadWorker(0, 30);
+    const pool = poolOf(w);
+    await sleep(10);
+    const parse = pool.requestParse(task('fallback.ts')).catch(error => error.message);
+    await pool.destroy();
+    expect(await parse).toContain('destroyed');
+    expect(w.loadedAt).not.toBeNull();
     expect(w.terminatedAt!).toBeGreaterThanOrEqual(w.loadedAt!);
   });
 

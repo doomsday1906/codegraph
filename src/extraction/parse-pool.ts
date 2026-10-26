@@ -202,8 +202,8 @@ export class ParseWorkerPool {
   // Spawned but not yet 'grammars-loaded'. Growth counts these so a single first
   // parse doesn't spawn the whole pool before the eager worker reports ready.
   private pending = new Set<ParsePoolWorker>();
-  // Each worker's grammar load, settled when it reports 'grammars-loaded' or
-  // goes away — what destroy() waits on before terminating it (see
+  // Initial and per-parse grammar loads settle when ready, done or gone —
+  // what destroy() waits on before terminating the worker (see
   // GRAMMAR_LOAD_SETTLE_MS).
   private loads = new Map<ParsePoolWorker, { settled: Promise<void>; settle: () => void }>();
   private parseCounts = new Map<ParsePoolWorker, number>();
@@ -309,6 +309,10 @@ export class ParseWorkerPool {
   }
 
   private onMessage(w: ParsePoolWorker, m: ParseWorkerMessage): void {
+    if (m.type === 'parse-ready') {
+      this.loadSettled(w);
+      return;
+    }
     if (m.type === 'grammars-loaded') {
       this.loadSettled(w);
       if (!this.workers.has(w)) return; // recycled/destroyed before ready
@@ -320,6 +324,7 @@ export class ParseWorkerPool {
     if (m.type === 'parse-result') {
       const job = this.inflight.get(w);
       if (!job || (m.id !== undefined && m.id !== job.id)) return; // stale (post-recycle)
+      this.loadSettled(w);
       this.inflight.delete(w);
       if (job.timerExpired) {
         // The base timer fired before this result was processed. That almost
@@ -407,6 +412,10 @@ export class ParseWorkerPool {
   }
 
   private dispatch(w: ParsePoolWorker, job: ParseJob): void {
+    // A fallback may load a grammar before parsing; teardown must wait for it.
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    this.loads.set(w, { settled, settle });
     this.inflight.set(w, job);
     this.parseCounts.set(w, (this.parseCounts.get(w) ?? 0) + 1);
     // Scale the timeout for large files: base + 10s per 100KB (matches the

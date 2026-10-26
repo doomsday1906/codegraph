@@ -9,6 +9,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
+import { Worker } from 'worker_threads';
+import * as path from 'path';
+import * as fs from 'fs';
 import { readGrammarWasmBytes } from '../src/extraction/grammars';
 
 describe('readGrammarWasmBytes', () => {
@@ -41,3 +44,52 @@ describe('readGrammarWasmBytes', () => {
     expect(tree!.rootNode.toString()).toContain('function_declaration');
   });
 });
+
+const workerDist = process.env.CODEGRAPH_TEST_DIST ?? path.resolve(__dirname, '../dist');
+// E2E: only the real worker can prove readiness does not eagerly compile grammars.
+it.skipIf(!fs.existsSync(path.join(workerDist, 'extraction/parse-worker.js')))(
+  'loads only the current fallback language, including delegated component grammars', async () => {
+    const dist = workerDist;
+    const worker = new Worker(`
+      const { parentPort } = require('worker_threads');
+      const grammars = require(${JSON.stringify(path.join(dist, 'extraction/grammars.js'))});
+      const post = parentPort.postMessage.bind(parentPort);
+      parentPort.postMessage = message => post({ ...message,
+        loaded: ['python', 'typescript', 'javascript', 'cpp', 'csharp'].filter(grammars.isGrammarLoaded) });
+      require(${JSON.stringify(path.join(dist, 'extraction/parse-worker.js'))});
+    `, { eval: true, env: { ...process.env, CODEGRAPH_KERNEL: '0' } });
+    const exchange = (type: string, message: object) => new Promise<any>((resolve, reject) => {
+      const onError = (error: Error) => { worker.off('message', onMessage); reject(error); };
+      const onMessage = (reply: any) => {
+        if (reply.type !== type) return;
+        worker.off('error', onError);
+        worker.off('message', onMessage);
+        resolve(reply);
+      };
+      worker.once('error', onError);
+      worker.on('message', onMessage);
+      worker.postMessage(message);
+    });
+    try {
+      const grammarBuffers = await readGrammarWasmBytes(['python', 'vue', 'cpp', 'csharp']);
+      const ready = await exchange('grammars-loaded', {
+        type: 'load-grammars', languages: ['python', 'vue', 'cpp', 'csharp'], grammarBuffers,
+      });
+      expect(ready.loaded).toEqual([]);
+      const python = await exchange('parse-result', {
+        type: 'parse', id: 1, filePath: 'hello.py', language: 'python', content: 'def hello():\n    return 1\n',
+      });
+      expect(python.loaded).toEqual(['python']);
+      expect(python.result.errors).toEqual([]);
+      expect(python.result.nodes.some((node: any) => node.name === 'hello')).toBe(true);
+      const vue = await exchange('parse-result', {
+        type: 'parse', id: 2, filePath: 'hello.vue', language: 'vue',
+        content: '<script lang="ts">export function greeting(): string { return "hi"; }</script>',
+      });
+      expect(vue.loaded).toEqual(['python', 'typescript', 'javascript']);
+      expect(vue.result.errors).toEqual([]);
+      expect(vue.result.nodes.some((node: any) => node.name === 'greeting')).toBe(true);
+    } finally {
+      await worker.terminate();
+    }
+  }, 10_000);

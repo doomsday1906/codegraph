@@ -20,6 +20,7 @@ import { assertNoRebuild, releaseWriterLock, tryAcquireWriterLock, writerLockHel
 import { QueryPool, resolvePoolSize } from './query-pool';
 import { endFreshnessMeasurements } from './index-freshness';
 import { acquireProject, ProjectLease } from './project-lifecycle';
+import { collectBeforeExit } from '../worker-teardown';
 
 // Lazy-load the heavy CodeGraph chain (sqlite + query/graph/context layers) OFF
 // the MCP startup path. It's only needed once a tool actually opens a project —
@@ -321,6 +322,7 @@ export class MCPEngine {
       debounceMs,
       onSyncComplete: (result) => {
         if (result.filesChanged > 0) {
+          collectBeforeExit();
           process.stderr.write(
             `[CodeGraph MCP] Auto-synced ${result.filesChanged} file(s) in ${result.durationMs}ms\n`
           );
@@ -439,6 +441,7 @@ export class MCPEngine {
       .then((result) => {
         const changed = result.filesAdded + result.filesModified + result.filesRemoved;
         if (changed > 0) {
+          collectBeforeExit();
           process.stderr.write(`[CodeGraph MCP] Caught up ${changed} file(s) changed since last run\n`);
         }
       })

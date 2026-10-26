@@ -7,6 +7,7 @@ import { LockUnavailableError, watchDisabledReason } from '../sync';
 import { getDaemonSocketCandidates } from './daemon-paths';
 import { connectWithHello } from './proxy';
 import { markWriterReady, readWriterLock, releaseWriterLock, tryAcquireWriterLock } from './writer-lock';
+import { collectBeforeExit } from '../worker-teardown';
 
 interface Project {
   /** Identity key: one entry however the root is spelled (#2278). */
@@ -151,7 +152,8 @@ async function activate(root: string, project: Project): Promise<void> {
       process.stderr.write(`[CodeGraph MCP] File watcher active for ${root} — graph will auto-sync on changes\n`);
     }
   }
-  await project.cg.sync();
+  const result = await project.cg.sync();
+  if (result.filesAdded + result.filesModified + result.filesRemoved > 0) collectBeforeExit();
   project.caughtUp = true;
   markWriterReady(root);
 }

@@ -285,6 +285,23 @@ describe('Sync Module', () => {
       expect(result.changedFilePaths).toContain('src/index.ts');
     });
 
+    it('resolves changed files through the yielding resolver so the daemon watchdog never sees a stall', async () => {
+      fs.writeFileSync(
+        path.join(testDir, 'src', 'caller.ts'),
+        `import { hello } from './index';\nexport function caller() { return hello(); }`
+      );
+      const resolver = (cg as any).resolver;
+      const blocking = vi.spyOn(resolver, 'resolveAndPersist');
+      const yielding = vi.spyOn(resolver, 'resolveAndPersistListYielding');
+
+      await cg.sync();
+
+      expect(blocking).not.toHaveBeenCalled();
+      expect(yielding).toHaveBeenCalled();
+      const caller = cg.searchNodes('caller').find((r) => r.node.name === 'caller')!.node;
+      expect(cg.getCallees(caller.id).map((c) => c.node.name)).toContain('hello');
+    });
+
     it('should detect new untracked files via git', async () => {
       fs.writeFileSync(
         path.join(testDir, 'src', 'new.ts'),

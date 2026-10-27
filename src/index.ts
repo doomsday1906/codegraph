@@ -955,12 +955,14 @@ export class CodeGraph {
               total: unresolvedRefs.length,
             });
 
-            this.resolver.resolveAndPersist(unresolvedRefs, (current, total) => {
-              options.onProgress?.({
-                phase: 'resolving',
-                current,
-                total,
-              });
+            // Yielding: a large change set resolved in one blocking call stalls the
+            // daemon past its liveness watchdog, which kills it mid-pass and leaves
+            // the refs pending for every later daemon to restart.
+            await this.resolver.resolveAndPersistListYielding(unresolvedRefs);
+            options.onProgress?.({
+              phase: 'resolving',
+              current: unresolvedRefs.length,
+              total: unresolvedRefs.length,
             });
 
             // Retry previously-failed refs the changed files may now satisfy

@@ -170,6 +170,45 @@ process.stdin.on('error', () => process.exit(0)); // pipe broke -> parent gone
 process.stdin.resume();
 `;
 
+/**
+ * The same child body for Linux bash: a Node child costs ~45 MB per watched
+ * process, bash ~4 MB, and every card worktree runs its own daemon. argv and
+ * the kill notice match {@link CHILD_SOURCE}; `read -t` times out with >128.
+ */
+const BASH_CHILD_SOURCE = `
+P=$1 T=$2 C=$3; shift 3
+W=$((T / 1000)).$(printf %03d $((T % 1000)))
+snap() { local s= p; for p; do s+="$(stat -c %s:%y -- "$p" 2>/dev/null || echo x);"; done; printf %s "$s"; }
+die() {
+  printf '[%s] [CodeGraph] Main thread unresponsive for ~%ss%s — killing the wedged process so a fresh one can start (#850). Disable with CODEGRAPH_NO_WATCHDOG=1.\\n' "$(date -u +%FT%T.%3NZ)" $(((T + 500) / 1000)) "$1" >&2
+  kill -9 "$P" 2>/dev/null; exit 0
+}
+last=; (($#)) && last=$(snap "$@"); at=$SECONDS; silent=
+while :; do
+  IFS= read -r -t "$W" _; rc=$?
+  if ((rc == 0)); then
+    silent=
+    if (($#)) && ((SECONDS - at >= 1)); then last=$(snap "$@"); at=$SECONDS; fi
+    continue
+  fi
+  ((rc > 128)) || exit 0
+  (($#)) || die ''
+  now=$(date +%s%3N); [ -n "$silent" ] || silent=$((now - T))
+  cur=$(snap "$@")
+  if [ "$cur" != "$last" ] && ((now - silent < C)); then last=$cur; continue; fi
+  [ "$cur" != "$last" ] && die " despite ongoing disk activity (hard cap $((C / 1000))s reached)"
+  die ''
+done
+`;
+
+/** Linux with bash runs the light child; elsewhere the Node child. */
+function watchdogCommand(args: string[]): [string, string[]] {
+  if (process.platform === 'linux' && fs.existsSync('/bin/bash')) {
+    return ['/bin/bash', ['-c', BASH_CHILD_SOURCE, 'codegraph-watchdog', ...args]];
+  }
+  return [process.execPath, ['-e', CHILD_SOURCE, ...args]];
+}
+
 export interface WatchdogOptions {
   /**
    * Files whose size/mtime advancing counts as forward progress (the SQLite
@@ -200,9 +239,10 @@ export function installMainThreadWatchdog(options: WatchdogOptions = {}): Watchd
     // No execArgv inheritance (unlike Worker), so the child carries none of our
     // V8 flags — it runs no WASM and needs none. stderr inherits the parent's
     // fd 2 so the kill notice lands wherever the parent logs (daemon.log).
+    const [command, args] = watchdogCommand([String(process.pid), String(timeoutMs), String(capMs), ...progressPaths]);
     child = spawn(
-      process.execPath,
-      ['-e', CHILD_SOURCE, String(process.pid), String(timeoutMs), String(capMs), ...progressPaths],
+      command,
+      args,
       {
         stdio: ['pipe', 'ignore', 'inherit'],
         windowsHide: true,

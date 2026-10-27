@@ -52,7 +52,7 @@ export interface MCPEngineOptions {
   /**
    * Worker cap when `CODEGRAPH_QUERY_POOL_SIZE` is unset. A direct (single-client)
    * session sets a small cap so every session doesn't hold one worker per core;
-   * the shared daemon leaves it unset and scales with the machine.
+   * the shared daemon uses a slightly larger one.
    */
   queryPoolDefaultMax?: number;
   /**

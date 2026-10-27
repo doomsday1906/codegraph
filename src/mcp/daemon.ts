@@ -65,6 +65,8 @@ import {
 import { registerDaemon, deregisterDaemon } from './daemon-registry';
 
 /** Default idle linger after the last client disconnects. */
+/** Default worker cap for the shared daemon; `CODEGRAPH_QUERY_POOL_SIZE` still overrides it. */
+export const DAEMON_QUERY_POOL_MAX = 4;
 const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
 
 /**
@@ -198,8 +200,10 @@ export class Daemon {
     // read-tool dispatch to a worker pool — otherwise concurrent explores
     // serialize and starve the MCP transport (clients time out). Direct mode
     // (one stdio client) leaves the pool off; `CODEGRAPH_QUERY_POOL_SIZE=0`
-    // disables it here too.
-    this.engine = new MCPEngine({ queryPool: true });
+    // disables it here too. Each worker holds its own SQLite connection and heap;
+    // past 4 the extra workers cost ~70 MB each without making 16 concurrent
+    // explores faster, and every card worktree runs its own daemon.
+    this.engine = new MCPEngine({ queryPool: true, queryPoolDefaultMax: DAEMON_QUERY_POOL_MAX });
     this.engine.setProjectPathHint(projectRoot);
   }
 

@@ -52,10 +52,6 @@ the affected tests, review the diff, commit and push. Then use `codegraph upgrad
 A failed fetch, merge, build or regression check leaves the installed release
 active. Source changes that fail checks remain available for repair in Git.
 
-Submit the general indexing fixes upstream separately from the workstation's
-deployment integration. Once an upstream release includes them, drop our
-corresponding changes after verifying the same regressions.
-
 ## Commits and contributions
 
 - Keep a commit focused on one change, with an imperative title explaining the
@@ -79,15 +75,8 @@ corresponding changes after verifying the same regressions.
 
 ## Upstream PRs
 
-1. Check upstream's current contribution guidance and whether the problem is
-   already fixed. Fetch `upstream` and create a separate owned branch from its
-   current default branch; cherry-pick only the general fixes and tests.
-2. Review the complete PR diff. Exclude our installer, local paths, fork
-   instructions and unrelated changes. Push the PR branch to `origin`, not
-   `upstream`; target `colbymchenry/codegraph` explicitly when creating the PR.
-3. Describe the actual failure and resulting behavior, include a small
-   reproduction and focused test results, and state what was not checked.
-   Use `--body-file` for multiline text with `gh pr create`.
-4. Keep our fixes installed while the PR is reviewed or merged. Remove a fork
-   fix only after an upstream **release** includes it and the same regressions
-   pass on that release. Our local deployment integration can remain separate.
+No upstream PRs unless Andrew asks for one.
+
+Keep our fixes installed. Remove a fork fix only after an upstream **release**
+includes it and the same regressions pass on that release. Our local deployment
+integration can remain separate.

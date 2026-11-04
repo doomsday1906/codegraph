@@ -4,7 +4,7 @@ Canonical project guidance for coding agents working in this repository (Codex/A
 
 ## AgentWorkspace fork
 
-Read [FORK.md](FORK.md) before changing this fork, updating the installed tool, or preparing an upstream PR. It owns our branch/remotes, commit/push and deployment routes. This checkout runs on Andrew's Linux/WSL workstation; the inherited macOS/VM examples below describe the upstream maintainer's environment. Ordinary pushes to our fork follow `FORK.md`; the release workflow below describes upstream publishing.
+Read [FORK.md](FORK.md) before changing this fork or updating the installed tool. It owns our branch/remotes, commit/push and deployment routes. This checkout runs on Andrew's Linux/WSL workstation; the inherited macOS/VM examples below describe the upstream maintainer's environment. Ordinary pushes to our fork follow `FORK.md`; the release workflow below describes upstream publishing.
 
 **Codex size note:** root `AGENTS.md` is intentionally kept near ~35 KiB (critical build/test/arch/retrieval rules retained). Longer validation methodology + the Excalidraw worked example live in `docs/AGENTS.md`. This environment sets `project_doc_max_bytes = 49152` so root (and root+`docs/` when cwd is under `docs/`) are not silently truncated at the 32 KiB default.
 

@@ -900,15 +900,39 @@ export class CodeGraph {
         // timer-driven PASSIVE checkpoints ran, and a query-pool reader could
         // pin frames while the WAL grew without a bound.
         const backpressure = walValve ? () => walValve!.backpressure() : undefined;
-        const fullReconcile = !options.paths || options.paths.length === 0 || this.orchestrator.sourceSizeLimitChanged();
+        const requestWantsFullReconcile = !options.paths || options.paths.length === 0;
+        const sourceSizeLimitChanged = this.orchestrator.sourceSizeLimitChanged();
+        const wantsFullReconcile = requestWantsFullReconcile || sourceSizeLimitChanged;
+        // `sync` is also the ordinary CLI catch-up after a lane copies an
+        // existing index. When the indexed commit is still in this repository
+        // and the retained dirty set is valid, Git gives the complete candidate
+        // set without walking every source file. The regular per-path reconcile
+        // below remains authoritative for scope, existence and content hashes.
+        const tryGitSync = requestWantsFullReconcile && !sourceSizeLimitChanged && !this.pendingFullReconcile;
+        let fullReconcile = wantsFullReconcile && !tryGitSync;
         const gitState = this.orchestrator.beginGitIndexState(fullReconcile);
+        let syncPaths = fullReconcile ? undefined : options.paths;
+        let completeGitSync = false;
+        if (tryGitSync) {
+          const candidates = this.orchestrator.getGitSyncCandidates();
+          if (candidates === null) {
+            // Git changed or stopped answering between qualification and
+            // collection. Fall back to the known-correct filesystem reconcile.
+            fullReconcile = true;
+            syncPaths = undefined;
+          } else {
+            fullReconcile = false;
+            completeGitSync = true;
+            syncPaths = candidates;
+          }
+        }
 
         // An interrupted index may have absorbed its changed files before
         // resolution/synthesis. Detect those orphans BEFORE this sync adds refs.
         let refreshSynthesis = this.queries.getMetadata('synthesis_pending') === '1' ||
           this.queries.getUnresolvedReferencesCount() > 0;
         if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
-        const result = await this.orchestrator.sync(options.onProgress, fullReconcile ? undefined : options.paths, backpressure,
+        const result = await this.orchestrator.sync(options.onProgress, fullReconcile ? undefined : syncPaths, backpressure,
           (filePath, content) => {
             if (!refreshSynthesis && (this.queries.hasSynthesizedEdgesTouchingFile(filePath) ||
               this.queries.wasSynthesisInput(filePath) ||
@@ -1138,7 +1162,7 @@ export class CodeGraph {
           try { this.queries.setMetadata('index_state', 'complete'); } catch { /* advisory */ }
         }
 
-        this.orchestrator.finishGitIndexState(gitState, fullReconcile, result.failedFilePaths);
+        this.orchestrator.finishGitIndexState(gitState, fullReconcile, result.failedFilePaths, completeGitSync);
 
         if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
         return result;

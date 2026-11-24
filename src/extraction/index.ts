@@ -3299,7 +3299,7 @@ export class ExtractionOrchestrator {
     const tSyncScan = Date.now();
     let currentFiles: string[];
     let trackedFiles: FileRecord[];
-    if (scopedPaths && scopedPaths.length > 0) {
+    if (scopedPaths !== undefined) {
       // Scoped reconcile: stat only the reported paths. filesChecked counts
       // the PATHS examined (not the files found) — it must stay non-zero even
       // when every scoped path was a deletion, because CodeGraph.watch()
@@ -3511,7 +3511,10 @@ export class ExtractionOrchestrator {
       filesModified,
       filesRemoved,
       nodesUpdated,
-      durationMs: Date.now() - startTime,
+      // Keep the watcher's filesChecked===0 && durationMs===0 signature
+      // exclusive to lock contention; an exact empty Git change set is a
+      // successful no-op, even when the operation fits within one clock tick.
+      durationMs: Math.max(1, Date.now() - startTime),
       changedFilePaths: changedFilePaths.length > 0 ? changedFilePaths : undefined,
       ...(failedFilePaths.length > 0 ? { failedFilePaths } : {}),
       definitionDelta: definitionDelta.length > 0 ? definitionDelta : undefined,
@@ -3521,6 +3524,33 @@ export class ExtractionOrchestrator {
   sourceSizeLimitChanged(): boolean {
     // Reconcile legacy indexes once: their previous effective limit is unknown.
     return this.queries.getMetadata('max_source_file_size_bytes') !== String(this.maxSourceFileSizeBytes);
+  }
+
+  /**
+   * Exact candidate set for a complete Git-backed sync, or null when Git cannot
+   * prove the whole change set. The normal reconcile still checks each path's
+   * current scope, existence, stat and content hash before writing it.
+   */
+  getGitSyncCandidates(): string[] | null {
+    if (this.sourceSizeLimitChanged()) return null;
+    const stamp = this.queries.getMetadata(INDEXED_AT_COMMIT_KEY) ?? null;
+    const dirty = this.indexedDirtyPaths(stamp);
+    if (dirty === null || !canTrustGitFastPath(this.rootDir, stamp)) return null;
+    const changes = getGitChangedFiles(this.rootDir, stamp ?? undefined);
+    if (!changes) return null;
+    // Git status cannot report a recursively removed embedded repository: its
+    // child .git metadata disappeared with the directory, and the parent repo
+    // may have ignored the whole subtree. Preserve full-sync deletion semantics
+    // by checking indexed paths for missing files. This touches only the compact
+    // DB path list (no source reads, hashes, or repository walk) and adds any
+    // missing paths to the same scoped reconciliation used for Git changes.
+    const missing: string[] = [];
+    for (const filePath of this.queries.getAllFilePaths()) {
+      const fullPath = validatePathWithinRoot(this.rootDir, filePath);
+      if (!fullPath) return null;
+      if (!fs.existsSync(fullPath)) missing.push(filePath);
+    }
+    return [...new Set([...dirty, ...changes.added, ...changes.modified, ...changes.deleted, ...missing])];
   }
 
   private indexedDirtyPaths(stamp: string | null): string[] | null {
@@ -3553,18 +3583,18 @@ export class ExtractionOrchestrator {
     return { head, stamp, dirty, maxSourceFileSizeBytes: this.maxSourceFileSizeBytes };
   }
 
-  finishGitIndexState(snapshot: { head: string; stamp: string; dirty: string[] | null; maxSourceFileSizeBytes: number }, full: boolean, retries: string[] = []): void {
+  finishGitIndexState(snapshot: { head: string; stamp: string; dirty: string[] | null; maxSourceFileSizeBytes: number }, full: boolean, retries: string[] = [], completeGitSync = false): void {
     if (full && snapshot.maxSourceFileSizeBytes === this.maxSourceFileSizeBytes) {
       this.queries.setMetadata('max_source_file_size_bytes', String(snapshot.maxSourceFileSizeBytes));
     }
     const after = getGitChangedFiles(this.rootDir);
     if (!snapshot.dirty || !after) return;
-    const commit = full ? snapshot.head : snapshot.stamp;
+    const commit = full || completeGitSync ? snapshot.head : snapshot.stamp;
     const paths = [...new Set([...snapshot.dirty, ...after.added, ...after.modified, ...after.deleted, ...retries])].sort();
     // The embedded commit makes a torn pair fail closed: readers reject a dirty
     // set that doesn't match the separately stored commit. Write the set first.
     this.queries.setMetadata('indexed_dirty_paths', JSON.stringify({ commit, paths }));
-    if (full) this.queries.setMetadata(INDEXED_AT_COMMIT_KEY, commit);
+    if (full || completeGitSync) this.queries.setMetadata(INDEXED_AT_COMMIT_KEY, commit);
   }
 
   /**

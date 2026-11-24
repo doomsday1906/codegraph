@@ -99,6 +99,32 @@ describe('git index currency across commits and restores (#1829)', () => {
     await cg.sync(); clean();
   });
 
+  it('does not enumerate every Git-visible source file during a trusted full sync', async () => {
+    write('untouched.ts', 'untouched');
+    write('changed.ts', 'beforeChange');
+    commit();
+    expect((await cg.indexAll()).success).toBe(true);
+
+    write('changed.ts', 'afterChange');
+    const expectedHead = commit();
+    const realExecFileSync = cp.execFileSync;
+    const fullSourceFileListCalls: string[][] = [];
+    vi.spyOn(cp, 'execFileSync').mockImplementation(((file: string, args: string[], options: any) => {
+      if (file === 'git' && args[0] === 'ls-files' && args.includes('-s')) {
+        fullSourceFileListCalls.push(args);
+        throw new Error('A targeted Git sync must not list every staged source file');
+      }
+      return (realExecFileSync as any)(file, args, options);
+    }) as typeof cp.execFileSync);
+
+    const result = await cg.sync();
+
+    expect(fullSourceFileListCalls).toEqual([]);
+    expect(result.failedFilePaths ?? []).toHaveLength(0);
+    expect(symbols('afterChange')).toContain('afterChange');
+    expect(metadata().getMetadata('indexed_at_commit')).toBe(expectedHead);
+  });
+
   it('retains a restored dirty path when a later scoped sync touches another file', async () => {
     write('source.ts', 'dirtyVersion'); await cg.sync();
     git('restore', 'source.ts'); write('other.ts', 'other');

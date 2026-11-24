@@ -3264,7 +3264,13 @@ export class ExtractionOrchestrator {
      */
     backpressure?: () => Promise<void> | null,
     /** Inspect changed inputs before deletion/re-extraction cascades their edges. */
-    onFileChange?: (filePath: string, content?: string) => void
+    onFileChange?: (filePath: string, content?: string) => void,
+    /**
+     * Git sync has already applied the same scope rules while collecting its
+     * exact candidate paths. Rebuilding ScopeIgnore here would enumerate every
+     * tracked gitlink in every repository, defeating the path-local sync.
+     */
+    pathsAreGitScoped = false
   ): Promise<SyncResult> {
     await initGrammars(); // Initialize WASM runtime (grammars loaded lazily below)
     const startTime = Date.now();
@@ -3315,12 +3321,12 @@ export class ExtractionOrchestrator {
       // so a tracked one takes the removal branch below, exactly as a full
       // sync would treat it. (`include`-forced paths pass: ScopeIgnore
       // applies the include precedence itself.)
-      const scope = this.scopedSyncMatcher();
+      const scope = pathsAreGitScoped ? null : this.scopedSyncMatcher();
       const overrides = loadExtensionOverrides(this.rootDir);
       currentFiles = unique.filter(
         (p) =>
           isSourceFile(p, overrides) &&
-          !scope.ignores(p) &&
+          (!scope || !scope.ignores(p)) &&
           fs.existsSync(path.join(this.rootDir, p))
       );
       trackedFiles = [];

@@ -940,7 +940,7 @@ export class CodeGraph {
               refreshSynthesis = true;
               this.queries.setMetadata('synthesis_pending', '1');
             }
-          });
+          }, completeGitSync);
 
         // Fold the store phase's WAL BEFORE the post-store reads below
         // (resolution reads on the main thread) — same rationale as

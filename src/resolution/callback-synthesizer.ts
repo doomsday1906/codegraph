@@ -23,6 +23,7 @@
  */
 import type { Edge, Language, Node, NodeKind } from '../types';
 import type { QueryBuilder } from '../db/queries';
+import type { SynthesisScope } from '../db/synthesis-stage';
 import type { ResolutionContext } from './types';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { stripCommentsForRegex } from './strip-comments';
@@ -3912,8 +3913,8 @@ function synthPassCostHint(name: string): number {
 const FIXED_SYNTH_STEPS = 4;
 export const SYNTH_PROGRESS_STEPS = SYNTH_PASSES.length + FIXED_SYNTH_STEPS;
 export async function synthesizeCallbackEdges(
-  queries: QueryBuilder,
-  ctx: ResolutionContext,
+  baseQueries: QueryBuilder,
+  baseContext: ResolutionContext,
   onProgress?: (done: number, total: number) => void,
   // A live resolver pool to fan the independent passes across (structural type
   // so this file never imports the pool — resolver-worker imports THIS file).
@@ -3925,8 +3926,25 @@ export async function synthesizeCallbackEdges(
   backpressure?: () => Promise<void> | null,
   // Main-thread work to run while the pool computes the passes (the main
   // thread otherwise only waits there) — e.g. building a deferred index.
-  whilePoolBusy?: () => void
+  whilePoolBusy?: () => void,
+  scope?: SynthesisScope
 ): Promise<number> {
+  const queries = scope ? new Proxy(baseQueries, {
+    get(target, property) {
+      if (property === 'iterateNodesByKind') return (kind: NodeKind) => target.iterateNodesByKind(kind, scope.filePaths);
+      if (property === 'iterateNodesByKindIn') return (kind: NodeKind, languages: readonly string[]) => target.iterateNodesByKindIn(kind, languages, scope.filePaths);
+      if (property === 'iterateNodesByLanguageWithDecorator') return (language: Language, decorator: string) => target.iterateNodesByLanguageWithDecorator(language, decorator, scope.filePaths);
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) : baseQueries;
+  const scopeFiles = scope ? new Set(scope.filePaths) : null;
+  const ctx: ResolutionContext = scope ? {
+    ...baseContext,
+    getAllFiles: () => baseContext.getAllFiles().filter((filePath) => scopeFiles!.has(filePath)),
+    getNodesByKind: (kind) => baseContext.getNodesByKind(kind).filter((node) => scopeFiles!.has(node.filePath)),
+    iterateNodesByKind: (kind) => queries.iterateNodesByKind(kind),
+  } : baseContext;
   // Each sub-pass below is a whole-graph scan, and there are ~30 of them, all
   // running synchronously on the indexer's main thread. Their AGGREGATE can run
   // for well over a minute on a large repo — long enough for the #850 liveness

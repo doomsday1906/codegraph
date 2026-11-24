@@ -1327,14 +1327,17 @@ export class QueryBuilder {
    * dynamic-edge synthesizers only scan-and-filter, so they iterate to keep
    * memory O(1) in the node count rather than O(nodes) (#610).
    */
-  *iterateNodesByKind(kind: NodeKind): IterableIterator<Node> {
+  *iterateNodesByKind(kind: NodeKind, filePaths?: readonly string[]): IterableIterator<Node> {
     // Fresh statement per call (not a cached one): an iterator holds an open
     // cursor, so a shared statement would conflict across overlapping scans.
     // Synthesis uses first/last-match precedence and caps: insertion order
     // changes on sync. idx_nodes_kind streams this canonical order without
     // materializing/sorting all of a large project's methods in memory.
-    const stmt = this.db.prepare('SELECT * FROM nodes WHERE kind = ? ORDER BY file_path, start_line, id');
-    for (const row of stmt.iterate(kind)) {
+    if (filePaths && filePaths.length === 0) return;
+    const stmt = this.db.prepare(filePaths
+      ? `SELECT * FROM nodes WHERE kind = ? AND file_path IN (${filePaths.map(() => '?').join(', ')}) ORDER BY file_path, start_line, id`
+      : 'SELECT * FROM nodes WHERE kind = ? ORDER BY file_path, start_line, id');
+    for (const row of stmt.iterate(kind, ...(filePaths ?? []))) {
       yield rowToNode(row as NodeRow);
     }
   }
@@ -1346,12 +1349,13 @@ export class QueryBuilder {
    * same sequence. A Go pass on a TypeScript monorepo otherwise materialized
    * every method in the project to find a couple of Go ones.
    */
-  *iterateNodesByKindIn(kind: NodeKind, languages: readonly string[]): IterableIterator<Node> {
+  *iterateNodesByKindIn(kind: NodeKind, languages: readonly string[], filePaths?: readonly string[]): IterableIterator<Node> {
     if (languages.length === 0) return;
+    if (filePaths && filePaths.length === 0) return;
     const stmt = this.db.prepare(
-      `SELECT * FROM nodes WHERE kind = ? AND language IN (${languages.map(() => '?').join(', ')}) ORDER BY file_path, start_line, id`
+      `SELECT * FROM nodes WHERE kind = ? AND language IN (${languages.map(() => '?').join(', ')})${filePaths ? ` AND file_path IN (${filePaths.map(() => '?').join(', ')})` : ''} ORDER BY file_path, start_line, id`
     );
-    for (const row of stmt.iterate(kind, ...languages)) {
+    for (const row of stmt.iterate(kind, ...languages, ...(filePaths ?? []))) {
       yield rowToNode(row as NodeRow);
     }
   }
@@ -1373,13 +1377,14 @@ export class QueryBuilder {
    * the way `getAllNodes().filter(...)` did — that array alone OOM'd Node's
    * default heap on a 2M-node graph (#1212).
    */
-  *iterateNodesByLanguageWithDecorator(language: Language, decorator: string): IterableIterator<Node> {
+  *iterateNodesByLanguageWithDecorator(language: Language, decorator: string, filePaths?: readonly string[]): IterableIterator<Node> {
     // Fresh statement per call — an iterator holds an open cursor (see
     // iterateNodesByKind).
+    if (filePaths && filePaths.length === 0) return;
     const stmt = this.db.prepare(
-      "SELECT * FROM nodes WHERE language = ? AND decorators LIKE '%' || ? || '%' ORDER BY file_path, start_line, id"
+      `SELECT * FROM nodes WHERE language = ? AND decorators LIKE '%' || ? || '%'${filePaths ? ` AND file_path IN (${filePaths.map(() => '?').join(', ')})` : ''} ORDER BY file_path, start_line, id`
     );
-    for (const row of stmt.iterate(language, `"${decorator}"`)) {
+    for (const row of stmt.iterate(language, `"${decorator}"`, ...(filePaths ?? []))) {
       yield rowToNode(row as NodeRow);
     }
   }
@@ -2064,6 +2069,52 @@ export class QueryBuilder {
       AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END >= ?
       AND CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END < ? LIMIT 1`
     ).get(`${filePath}:`, `${filePath};`);
+  }
+
+  /**
+   * Source files whose synthesized or name-bound edges may need regeneration
+   * after files or symbols change. The lookups use endpoint/name indexes and
+   * the existing unresolved-reference index; they do not walk the graph.
+   */
+  getSynthesisAffectedFiles(filePaths: string[], names: string[]): string[] {
+    const affected = new Set(filePaths);
+    const synthOwned = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.synthesizedBy') END IS NOT NULL";
+    const pathChunkSize = Math.min(SQLITE_PARAM_CHUNK_SIZE, 200);
+    for (let i = 0; i < filePaths.length; i += pathChunkSize) {
+      const chunk = filePaths.slice(i, i + pathChunkSize);
+      const registeredAt = "CASE WHEN json_valid(e.metadata) THEN json_extract(e.metadata, '$.registeredAt') END";
+      const rows = this.db.prepare(`
+        SELECT DISTINCT src.file_path AS source_path, tgt.file_path AS target_path
+          FROM edges e
+          JOIN nodes src ON src.id = e.source
+          JOIN nodes tgt ON tgt.id = e.target
+         WHERE ${synthOwned} AND (
+           src.file_path IN (${chunk.map(() => '?').join(',')}) OR
+           tgt.file_path IN (${chunk.map(() => '?').join(',')}) OR
+           (${chunk.map(() => `(${registeredAt} >= ? AND ${registeredAt} < ?)`).join(' OR ')})
+         )
+      `).all(...chunk, ...chunk, ...chunk.flatMap((p) => [`${p}:`, `${p};`])) as Array<{ source_path: string; target_path: string }>;
+      for (const row of rows) { affected.add(row.source_path); affected.add(row.target_path); }
+    }
+    for (let i = 0; i < names.length; i += SQLITE_PARAM_CHUNK_SIZE) {
+      const chunk = names.slice(i, i + SQLITE_PARAM_CHUNK_SIZE);
+      const marks = chunk.map(() => '?').join(',');
+      const nodes = this.db.prepare(`SELECT DISTINCT file_path FROM nodes WHERE name IN (${marks})`).all(...chunk) as Array<{ file_path: string }>;
+      for (const row of nodes) affected.add(row.file_path);
+      const edges = this.db.prepare(`
+        SELECT DISTINCT src.file_path
+          FROM nodes tgt JOIN edges e ON e.target = tgt.id JOIN nodes src ON src.id = e.source
+         WHERE tgt.name IN (${marks})
+        UNION
+        SELECT DISTINCT src.file_path
+          FROM nodes src JOIN edges e ON e.source = src.id
+         WHERE src.name IN (${marks})
+      `).all(...chunk, ...chunk) as Array<{ file_path: string }>;
+      for (const row of edges) affected.add(row.file_path);
+      const refs = this.db.prepare(`SELECT DISTINCT file_path FROM unresolved_refs WHERE name_tail IN (${marks})`).all(...chunk) as Array<{ file_path: string }>;
+      for (const row of refs) affected.add(row.file_path);
+    }
+    return [...affected];
   }
 
   wasSynthesisInput(filePath: string): boolean {

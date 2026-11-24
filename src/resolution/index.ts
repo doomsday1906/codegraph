@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Language, Node, UnresolvedReference, Edge } from '../types';
 import { QueryBuilder } from '../db/queries';
-import { SynthesisStage } from '../db/synthesis-stage';
+import { SynthesisStage, type SynthesisScope } from '../db/synthesis-stage';
 import {
   UnresolvedRef,
   ResolvedRef,
@@ -2359,13 +2359,14 @@ export class ReferenceResolver {
   async refreshSynthesis(
     dbPath: string,
     onProgress?: (done: number, total: number) => void,
-    backpressure?: () => Promise<void> | null
+    backpressure?: () => Promise<void> | null,
+    scope?: SynthesisScope
   ): Promise<number> {
     this.clearCaches();
-    const stage = new SynthesisStage(dbPath);
+    const stage = new SynthesisStage(dbPath, scope);
     try {
       const fresh = new ReferenceResolver(this.projectRoot, stage.queries);
-      const count = await synthesizeCallbackEdges(stage.queries, fresh.context, onProgress, null, backpressure);
+      const count = await synthesizeCallbackEdges(stage.queries, fresh.context, onProgress, null, backpressure, undefined, scope);
       await stage.publish(backpressure);
       return count;
     } finally {

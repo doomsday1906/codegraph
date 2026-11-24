@@ -929,14 +929,18 @@ export class CodeGraph {
 
         // An interrupted index may have absorbed its changed files before
         // resolution/synthesis. Detect those orphans BEFORE this sync adds refs.
-        let refreshSynthesis = this.queries.getMetadata('synthesis_pending') === '1' ||
+        const synthesisNeedsFullRefresh = this.queries.getMetadata('synthesis_pending') === '1' ||
           this.queries.getUnresolvedReferencesCount() > 0;
+        let refreshSynthesis = synthesisNeedsFullRefresh;
+        const changedSynthesisFiles = new Set<string>();
         if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
         const result = await this.orchestrator.sync(options.onProgress, fullReconcile ? undefined : syncPaths, backpressure,
           (filePath, content) => {
-            if (!refreshSynthesis && (this.queries.hasSynthesizedEdgesTouchingFile(filePath) ||
+            const synthesisAffected = this.queries.hasSynthesizedEdgesTouchingFile(filePath) ||
               this.queries.wasSynthesisInput(filePath) ||
-              (content !== undefined && hasSynthesisPattern(filePath, content)))) {
+              (content !== undefined && hasSynthesisPattern(filePath, content));
+            if (synthesisAffected) changedSynthesisFiles.add(filePath);
+            if (!refreshSynthesis && synthesisAffected) {
               refreshSynthesis = true;
               this.queries.setMetadata('synthesis_pending', '1');
             }
@@ -1131,9 +1135,24 @@ export class CodeGraph {
         }
 
         if (refreshSynthesis) {
+          let synthesisScope: { filePaths: string[]; names: string[] } | undefined;
+          const names = [...new Set(result.definitionDelta ?? [])];
+          if (!synthesisNeedsFullRefresh && changedSynthesisFiles.size > 0 && names.length <= 500) {
+            const filePaths = new Set(this.queries.getSynthesisAffectedFiles([...changedSynthesisFiles], names));
+            if (names.length > 0) {
+              for (const ref of this.queries.getRetryableFailedReferences(names)) {
+                if (ref.filePath) filePaths.add(ref.filePath);
+              }
+              for (const edge of this.queries.getResolutionEdgesByTargetName(names)) filePaths.add(edge.sourceFilePath);
+            }
+            // If one edit fans into most of the index, the full pass is the
+            // simpler exact path. Keep the incremental path bounded to a local
+            // region that can be regenerated without scanning unrelated files.
+            if (filePaths.size <= 500) synthesisScope = { filePaths: [...filePaths], names };
+          }
           await this.resolver.refreshSynthesis(this.db.getPath(), (done, total) => {
             options.onProgress?.({ phase: 'linking', current: done, total });
-          }, backpressure);
+          }, backpressure, synthesisScope);
           this.queries.setMetadata('synthesis_pending', '0');
         }
 

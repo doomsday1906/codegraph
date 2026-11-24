@@ -3392,12 +3392,12 @@ export class QueryBuilder {
   /**
    * Insert multiple unresolved references in a transaction
    */
-  insertUnresolvedRefsBatch(refs: UnresolvedReference[]): void {
+  insertUnresolvedRefsBatch(refs: UnresolvedReference[], status: 'pending' | 'failed' = 'pending'): void {
     if (refs.length === 0) return;
     const insert = this.db.transaction(() => {
       const rows: unknown[][] = [];
       for (const ref of refs) {
-        rows.push([
+        const values: unknown[] = [
           ref.fromNodeId,
           ref.referenceName,
           ref.referenceKind,
@@ -3406,16 +3406,57 @@ export class QueryBuilder {
           ref.candidates ? JSON.stringify(ref.candidates) : null,
           ref.filePath ?? '',
           ref.language ?? 'unknown',
-        ]);
+        ];
+        if (status === 'failed') values.push('failed', referenceNameTail(ref.referenceName));
+        rows.push(values);
       }
       this.runBatched(
-        'insertUnresolvedRefs',
-        'INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language) VALUES ',
-        '(?,?,?,?,?,?,?,?)',
+        status === 'failed' ? 'insertFailedUnresolvedRefs' : 'insertUnresolvedRefs',
+        status === 'failed'
+          ? 'INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language, status, name_tail) VALUES '
+          : 'INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language) VALUES ',
+        status === 'failed' ? '(?,?,?,?,?,?,?,?,?,?)' : '(?,?,?,?,?,?,?,?)',
         rows
       );
     });
     insert();
+  }
+
+  /** All unresolved rows, including parked failures, for one file re-index. */
+  getFileUnresolvedReferences(filePath: string): Array<UnresolvedReference & { status: 'pending' | 'failed' }> {
+    const rows = this.db.prepare('SELECT * FROM unresolved_refs WHERE file_path = ?').all(filePath) as UnresolvedRefRow[];
+    return rows.map((row) => ({
+      fromNodeId: row.from_node_id,
+      referenceName: row.reference_name,
+      referenceKind: row.reference_kind as EdgeKind,
+      line: row.line,
+      column: row.col,
+      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
+      filePath: row.file_path,
+      language: row.language as Language,
+      rowId: row.id,
+      status: row.status as 'pending' | 'failed',
+    }));
+  }
+
+  /** Resolution edges produced by references originating in one file. */
+  getResolutionEdgesFromFile(filePath: string): Edge[] {
+    const rows = this.db.prepare(
+      `SELECT e.* FROM edges e JOIN nodes src ON src.id = e.source
+        WHERE src.file_path = ? AND e.kind != 'contains'
+          AND (e.provenance IS NULL OR e.provenance != 'heuristic')`
+    ).all(filePath) as EdgeRow[];
+    return rows.map(rowToEdge);
+  }
+
+  /** Whether a graph node still exists after a file replacement. */
+  hasNodeId(nodeId: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM nodes WHERE id = ?').get(nodeId);
+  }
+
+  /** Public existence lookup for edges retained across a file re-index. */
+  getExistingNodeIdsForEdges(nodeIds: string[]): Set<string> {
+    return this.getExistingNodeIds(nodeIds);
   }
 
   /**

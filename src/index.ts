@@ -926,13 +926,14 @@ export class CodeGraph {
             syncPaths = candidates;
           }
         }
-
         // An interrupted index may have absorbed its changed files before
         // resolution/synthesis. Detect those orphans BEFORE this sync adds refs.
         const synthesisNeedsFullRefresh = this.queries.getMetadata('synthesis_pending') === '1' ||
           this.queries.getUnresolvedReferencesCount() > 0;
         let refreshSynthesis = synthesisNeedsFullRefresh;
         const changedSynthesisFiles = new Set<string>();
+        const resolutionReusedFiles = new Set<string>();
+        const semanticNoopFiles = new Set<string>();
         if (refreshSynthesis) this.queries.setMetadata('synthesis_pending', '1');
         const result = await this.orchestrator.sync(options.onProgress, fullReconcile ? undefined : syncPaths, backpressure,
           (filePath, content) => {
@@ -944,8 +945,9 @@ export class CodeGraph {
               refreshSynthesis = true;
               this.queries.setMetadata('synthesis_pending', '1');
             }
-          }, completeGitSync);
-
+          }, completeGitSync, completeGitSync && gitState.stamp ? gitState.stamp : undefined,
+          (filePath) => resolutionReusedFiles.add(filePath),
+          (filePath) => semanticNoopFiles.add(filePath));
         // Fold the store phase's WAL BEFORE the post-store reads below
         // (resolution reads on the main thread) — same rationale as
         // indexAll's fold between store and resolution.
@@ -1004,7 +1006,7 @@ export class CodeGraph {
             // matches, this is one indexed lookup.
             const tRetry = Date.now();
             const retryable = this.queries.getRetryableFailedReferences(
-              this.queries.getNodeNamesByFiles(result.changedFilePaths)
+              result.definitionAddedNames ?? []
             );
             if (retryable.length > 0) {
               options.onProgress?.({
@@ -1068,7 +1070,7 @@ export class CodeGraph {
           const tRebind = Date.now();
           const rebound = this.orchestrator.resurrectStaleResolutionEdges(
             result.definitionDelta,
-            result.changedFilePaths ?? []
+            (result.changedFilePaths ?? []).filter((filePath) => !resolutionReusedFiles.has(filePath))
           );
           if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
             console.error(
@@ -1132,6 +1134,15 @@ export class CodeGraph {
           // Same lifecycle for `this.<member>` callback registrations whose
           // member is inherited from a supertype (#808).
           await this.resolver.resolveDeferredThisMemberRefs();
+        }
+
+        if (
+          refreshSynthesis && !synthesisNeedsFullRefresh && result.filesAdded === 0 && result.filesRemoved === 0 &&
+          !!result.changedFilePaths?.length && result.changedFilePaths.every((filePath) => semanticNoopFiles.has(filePath)) &&
+          !result.definitionDelta?.length && orphanCount === 0
+        ) {
+          refreshSynthesis = false;
+          this.queries.setMetadata('synthesis_pending', '0');
         }
 
         if (refreshSynthesis) {

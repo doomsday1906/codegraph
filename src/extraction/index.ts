@@ -15,6 +15,7 @@ import {
   FileRecord,
   ExtractionResult,
   ExtractionError,
+  Node,
   Edge,
   UnresolvedReference,
   ReferenceKind,
@@ -55,6 +56,65 @@ const FILE_IO_BATCH_SIZE = 10;
  * concurrent read query responsive while the reconcile runs.
  */
 const SYNC_RECONCILE_YIELD_INTERVAL = 1000;
+
+interface ChangedLineRange {
+  startLine: number;
+  endLine: number;
+}
+
+const RESOLUTION_SCOPE_KINDS = new Set(['function', 'method', 'class', 'struct', 'interface', 'trait', 'protocol', 'namespace', 'module', 'component']);
+
+/** Changed working-tree line ranges, or null when Git cannot prove them. */
+function gitChangedLineRanges(rootDir: string, baseCommit: string, filePath: string): ChangedLineRange[] | null {
+  try {
+    const diff = execFileSync('git', ['diff', '--no-ext-diff', '--no-color', '--unified=0', baseCommit, '--', filePath], {
+      cwd: rootDir, encoding: 'utf-8', timeout: 10000, maxBuffer: 10 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    });
+    const ranges: ChangedLineRange[] = [];
+    for (const line of diff.split('\n')) {
+      const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (!match) continue;
+      const startLine = Math.max(1, Number(match[1]));
+      const count = match[2] === undefined ? 1 : Number(match[2]);
+      ranges.push({ startLine, endLine: Math.max(startLine, startLine + count - 1) });
+    }
+    return ranges.length > 0 ? ranges : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Map changed hunks to the smallest syntax scopes whose references may be affected. */
+function changedReferenceScopes(
+  allNodes: readonly Node[],
+  ranges: readonly ChangedLineRange[],
+  content: string
+): { all: boolean; scopes: ChangedLineRange[] } {
+  const lines = content.split('\n');
+  const scopes: ChangedLineRange[] = [];
+  for (const range of ranges) {
+    const intersects = (n: { startLine: number; endLine: number }) => n.startLine <= range.endLine && n.endLine >= range.startLine;
+    const overlapping = allNodes.filter((n) => n.kind !== 'file' && intersects(n));
+    if (overlapping.some((n) => n.kind === 'import' || n.kind === 'export')) return { all: true, scopes: [] };
+    const containers = overlapping.filter((n) => RESOLUTION_SCOPE_KINDS.has(n.kind));
+    if (containers.length > 0) {
+      const scope = containers.sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine))[0]!;
+      scopes.push({ startLine: scope.startLine, endLine: scope.endLine });
+      continue;
+    }
+    if (overlapping.length > 0) return { all: true, scopes: [] };
+    const changedText = lines.slice(range.startLine - 1, range.endLine).map((line) => line.trim());
+    if (changedText.some((line) => line !== '' && !line.startsWith('#') && !line.startsWith('//') && !line.startsWith('/*') && !line.startsWith('*'))) {
+      return { all: true, scopes: [] };
+    }
+  }
+  return { all: false, scopes };
+}
+
+function referenceIdentity(fromNodeId: string, name: string, kind: string, line: number, column: number): string {
+  return `${fromNodeId}\0${name}\0${kind}\0${line}\0${column}`;
+}
 
 // PARSER_RESET_INTERVAL moved to parse-worker.ts (runs in worker thread)
 
@@ -150,6 +210,8 @@ export interface SyncResult {
    * nothing downstream.
    */
   definitionDelta?: string[];
+  /** Names introduced by this sync; only these can make an old failed ref resolvable. */
+  definitionAddedNames?: string[];
 }
 
 /**
@@ -2770,7 +2832,12 @@ export class ExtractionOrchestrator {
   /**
    * Index a single file
    */
-  async indexFile(relativePath: string): Promise<ExtractionResult> {
+  async indexFile(
+    relativePath: string,
+    changedRanges: readonly ChangedLineRange[] | null = null,
+    onResolutionReuse?: (filePath: string) => void,
+    onSemanticNoop?: (filePath: string) => void
+  ): Promise<ExtractionResult> {
     // Indexing read: follow in-root symlinks (the `../` guard still applies), #935.
     const fullPath = validatePathWithinRoot(this.rootDir, relativePath, { allowSymlinkEscape: true });
 
@@ -2813,7 +2880,7 @@ export class ExtractionOrchestrator {
       };
     }
 
-    return this.indexFileWithContent(relativePath, content, stats);
+    return this.indexFileWithContent(relativePath, content, stats, changedRanges, onResolutionReuse, onSemanticNoop);
   }
 
   /**
@@ -2823,7 +2890,10 @@ export class ExtractionOrchestrator {
   async indexFileWithContent(
     relativePath: string,
     content: string,
-    stats: fs.Stats
+    stats: fs.Stats,
+    changedRanges: readonly ChangedLineRange[] | null = null,
+    onResolutionReuse?: (filePath: string) => void,
+    onSemanticNoop?: (filePath: string) => void
   ): Promise<ExtractionResult> {
     // Prevent `../` traversal; follow in-root symlinks like the directory walk (#935).
     const fullPath = validatePathWithinRoot(this.rootDir, relativePath, { allowSymlinkEscape: true });
@@ -2878,7 +2948,7 @@ export class ExtractionOrchestrator {
     const result = extractFromSource(relativePath, content, language, frameworkNames);
 
     // Store in database
-    await this.storeExtractionResult(relativePath, content, language, stats, result, createYielder());
+    await this.storeExtractionResult(relativePath, content, language, stats, result, createYielder(), changedRanges, onResolutionReuse, onSemanticNoop);
 
     return result;
   }
@@ -2918,7 +2988,10 @@ export class ExtractionOrchestrator {
     language: Language,
     stats: fs.Stats,
     result: ExtractionResult,
-    onYield?: MaybeYield
+    onYield?: MaybeYield,
+    changedRanges: readonly ChangedLineRange[] | null = null,
+    onResolutionReuse?: (filePath: string) => void,
+    onSemanticNoop?: (filePath: string) => void
   ): Promise<void> {
     // A kernel result can arrive as an undecoded buffer transport (empty
     // node/edge arrays, tables riding in kernelBuffers). Decode it before
@@ -2997,6 +3070,73 @@ export class ExtractionOrchestrator {
         language: ref.language ?? language,
       }));
 
+    let refsToStore = validRefs;
+    let semanticNoop = false;
+    const reusableEdges: Array<{ ref: UnresolvedReference; edges: Edge[] }> = [];
+    const reusableFailedRefs: UnresolvedReference[] = [];
+    if (existingFile && changedRanges !== null && changedRanges.length > 0) {
+      const changedScopes = changedReferenceScopes(validNodes, changedRanges, content);
+      const sourceNodeById = new Map(validNodes.map((node) => [node.id, node]));
+      const oldFailedByIdentity = new Map<string, UnresolvedReference[]>();
+      for (const oldRef of this.queries.getFileUnresolvedReferences(filePath)) {
+        if (oldRef.status !== 'failed') continue;
+        const key = referenceIdentity(oldRef.fromNodeId, oldRef.referenceName, oldRef.referenceKind, oldRef.line, oldRef.column);
+        const entries = oldFailedByIdentity.get(key);
+        if (entries) entries.push(oldRef);
+        else oldFailedByIdentity.set(key, [oldRef]);
+      }
+      const oldEdgesByIdentity = new Map<string, Edge[]>();
+      for (const edge of this.queries.getResolutionEdgesFromFile(filePath)) {
+        const name = edge.metadata?.refName;
+        if (typeof name !== 'string' || name.length === 0) continue;
+        const kind = typeof edge.metadata?.refKind === 'string' ? edge.metadata.refKind : edge.kind;
+        const key = referenceIdentity(edge.source, name, kind, edge.line ?? 0, edge.column ?? 0);
+        const entries = oldEdgesByIdentity.get(key);
+        if (entries) entries.push(edge);
+        else oldEdgesByIdentity.set(key, [edge]);
+      }
+
+      const pending: typeof validRefs = [];
+      for (const ref of validRefs) {
+        const source = sourceNodeById.get(ref.fromNodeId);
+        const affected = changedScopes.all || !source || changedScopes.scopes.some((scope) =>
+          source.startLine >= scope.startLine && source.endLine <= scope.endLine
+        );
+        if (affected || ref.candidates) {
+          pending.push(ref);
+          continue;
+        }
+        const key = referenceIdentity(ref.fromNodeId, ref.referenceName, ref.referenceKind, ref.line, ref.column);
+        const edges = oldEdgesByIdentity.get(key);
+        if (edges?.length) {
+          reusableEdges.push({ ref, edges });
+          oldEdgesByIdentity.delete(key);
+          continue;
+        }
+        const failed = oldFailedByIdentity.get(key)?.shift();
+        if (failed) reusableFailedRefs.push(ref);
+        else pending.push(ref);
+      }
+      refsToStore = pending;
+      semanticNoop = !changedScopes.all && changedScopes.scopes.length === 0 && pending.length === 0;
+    }
+
+    const publishReferenceReuse = (): void => {
+      const targetIds = reusableEdges.flatMap(({ edges }) => edges.map((edge) => edge.target));
+      const existingIds = this.queries.getExistingNodeIdsForEdges(targetIds);
+      const edgesToInsert: Edge[] = [];
+      const refsToRetry: UnresolvedReference[] = [];
+      for (const group of reusableEdges) {
+        if (group.edges.every((edge) => existingIds.has(edge.target))) edgesToInsert.push(...group.edges);
+        else refsToRetry.push(group.ref);
+      }
+      if (edgesToInsert.length > 0) this.queries.insertEdges(edgesToInsert);
+      if (reusableFailedRefs.length > 0) this.queries.insertUnresolvedRefsBatch(reusableFailedRefs, 'failed');
+      if (refsToRetry.length > 0) this.queries.insertUnresolvedRefsBatch(refsToRetry);
+      if (edgesToInsert.length > 0 || reusableFailedRefs.length > 0) onResolutionReuse?.(filePath);
+      if (semanticNoop && refsToRetry.length === 0) onSemanticNoop?.(filePath);
+    };
+
     // Fast path for the common case (everything fits one chunk): the whole
     // re-store — deleting the old rows, the new nodes, edges, refs and file
     // record, and the re-attached incoming edges — lands in ONE transaction
@@ -3018,7 +3158,7 @@ export class ExtractionOrchestrator {
         this.queries.storeFileBundle({
           nodes: validNodes,
           edges: validEdges,
-          refs: validRefs,
+          refs: refsToStore,
           file: {
             path: filePath,
             contentHash,
@@ -3035,6 +3175,7 @@ export class ExtractionOrchestrator {
         if (crossFileIncomingEdges.length > 0) {
           this.reattachCrossFileEdges(crossFileIncomingEdges, priorNodes, validNodes);
         }
+        publishReferenceReuse();
       });
       return;
     }
@@ -3082,8 +3223,8 @@ export class ExtractionOrchestrator {
     }
 
     // Insert unresolved references in batch with denormalized filePath/language
-    for (let i = 0; i < validRefs.length; i += STORE_CHUNK) {
-      this.queries.insertUnresolvedRefsBatch(validRefs.slice(i, i + STORE_CHUNK));
+    for (let i = 0; i < refsToStore.length; i += STORE_CHUNK) {
+      this.queries.insertUnresolvedRefsBatch(refsToStore.slice(i, i + STORE_CHUNK));
       await onYield?.();
     }
 
@@ -3100,6 +3241,7 @@ export class ExtractionOrchestrator {
       generated,
     };
     this.queries.upsertFile(fileRecord);
+    publishReferenceReuse();
   }
 
   /**
@@ -3270,7 +3412,10 @@ export class ExtractionOrchestrator {
      * exact candidate paths. Rebuilding ScopeIgnore here would enumerate every
      * tracked gitlink in every repository, defeating the path-local sync.
      */
-    pathsAreGitScoped = false
+    pathsAreGitScoped = false,
+    referenceDiffBase?: string,
+    onResolutionReuse?: (filePath: string) => void,
+    onSemanticNoop?: (filePath: string) => void
   ): Promise<SyncResult> {
     await initGrammars(); // Initialize WASM runtime (grammars loaded lazily below)
     const startTime = Date.now();
@@ -3484,7 +3629,8 @@ export class ExtractionOrchestrator {
         currentFile: filePath,
       });
 
-      const result = await this.indexFile(filePath);
+      const changedRanges = referenceDiffBase ? gitChangedLineRanges(this.rootDir, referenceDiffBase, filePath) : null;
+      const result = await this.indexFile(filePath, changedRanges, onResolutionReuse, onSemanticNoop);
       if (result.errors.some(e => e.severity === 'error')) failedFilePaths.push(filePath);
       nodesUpdated += result.nodes.length;
 
@@ -3506,9 +3652,13 @@ export class ExtractionOrchestrator {
     // first measurement of this fix.
     const pairsAfter = this.queries.getNodeNamePairsByFiles(filesToIndex);
     const deltaNames = new Set<string>();
+    const addedNames = new Set<string>();
     const nameOf = (pair: string) => pair.slice(pair.indexOf('\0') + 1);
     for (const pair of pairsBefore) if (!pairsAfter.has(pair)) deltaNames.add(nameOf(pair));
-    for (const pair of pairsAfter) if (!pairsBefore.has(pair)) deltaNames.add(nameOf(pair));
+    for (const pair of pairsAfter) if (!pairsBefore.has(pair)) {
+      deltaNames.add(nameOf(pair));
+      addedNames.add(nameOf(pair));
+    }
     const definitionDelta = [...deltaNames];
 
     return {
@@ -3524,6 +3674,7 @@ export class ExtractionOrchestrator {
       changedFilePaths: changedFilePaths.length > 0 ? changedFilePaths : undefined,
       ...(failedFilePaths.length > 0 ? { failedFilePaths } : {}),
       definitionDelta: definitionDelta.length > 0 ? definitionDelta : undefined,
+      definitionAddedNames: addedNames.size > 0 ? [...addedNames] : undefined,
     };
   }
 

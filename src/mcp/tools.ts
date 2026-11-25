@@ -1838,17 +1838,25 @@ export function getStaticTools(): ToolDefinition[] {
 }
 
 /**
- * The MCP tools served by DEFAULT (short names). Pared to ONLY `codegraph_explore`
- * — the single tool that reliably earns its place: one capped call returns the
- * verbatim source of the relevant symbols grouped by file. Every other tool is a
- * narrower slice of what explore already does, and presence itself steers
- * mis-picks, so they are no longer LISTED to agents.
+ * The MCP tools served by DEFAULT (short names): the pair the agent reliably
+ * picks, in the order it should reach for them.
  *
- * The other defined tools (`node`, `search`, `callers`, plus callees/impact/files/
+ * - `explore` — PRIMARY: one capped call answers an open question or a flow
+ *   with the verbatim source of the relevant symbols grouped by file.
+ * - `node` — SECONDARY after explore: reads a symbol or file the agent can
+ *   already name, returning the full body + caller/callee trail (or Read-parity
+ *   file source). It gives the same sufficient answer for a known-symbol read
+ *   at about half explore's size, so the agent stops probing for a way to fetch
+ *   just that source — fewer tool calls for the same result.
+ *
+ * Every other tool is a narrower slice of what these two already do, and
+ * presence itself steers mis-picks, so they are not LISTED to agents.
+ *
+ * The other defined tools (`search`, `callers`, plus callees/impact/files/
  * status) remain fully functional — handlers stay, the library API and CLI are
  * untouched, and `CODEGRAPH_MCP_TOOLS=explore,node,...` re-enables any of them.
  */
-const DEFAULT_MCP_TOOLS = new Set(['explore']);
+const DEFAULT_MCP_TOOLS = new Set(['explore', 'node']);
 
 /** realpath when the path exists, the path itself otherwise — never throws. */
 function canonicalPath(p: string): string {
@@ -2128,7 +2136,7 @@ export class ToolHandler {
    */
   getTools(): ToolDefinition[] {
     const allow = this.toolAllowlist();
-    // No explicit allowlist → the default 4-tool surface (see
+    // No explicit allowlist → the default explore+node surface (see
     // DEFAULT_MCP_TOOLS for the evidence). An allowlist replaces the
     // default entirely, so any defined tool can be re-enabled.
     let visible = allow

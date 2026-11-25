@@ -7,14 +7,15 @@
  * before it sees individual tool descriptions.
  *
  * Goals when editing this:
- *   - Lead the agent to codegraph_explore for any structural/flow question
- *   - Reinforce "explore instead of Read/Grep" for indexed code
+ *   - Route a known symbol or file to codegraph_node, and open discovery,
+ *     multi-symbol or flow questions to codegraph_explore
+ *   - Reinforce "codegraph instead of Read/Grep" for indexed code
  *   - Anti-patterns (don't re-verify with grep; don't hand-reconstruct flows)
  *
  * Keep it tight. The agent reads this every session — long instructions
- * burn tokens. The DEFAULT MCP surface is `codegraph_explore` ALONE (see
- * DEFAULT_MCP_TOOLS in tools.ts) — reference only that tool here. The other
- * tools (node/search/callers/…) stay defined and are re-enablable via
+ * burn tokens. The DEFAULT MCP surface is `codegraph_explore` + `codegraph_node`
+ * (see DEFAULT_MCP_TOOLS in tools.ts) — reference only those tools here. The
+ * other tools (search/callers/…) stay defined and are re-enablable via
  * CODEGRAPH_MCP_TOOLS, but they are NOT listed to agents, so don't name them.
  */
 export const SERVER_INSTRUCTIONS = `# Codegraph — code intelligence over an indexed knowledge graph
@@ -31,30 +32,39 @@ verbatim source PLUS who calls it and what it affects, so you edit with the
 blast radius in view. More accurate context, in far fewer tokens and
 round-trips than reading files yourself.
 
-## One tool: codegraph_explore — use it instead of reading files
+## Two tools — use them instead of reading files
 
-There is a single tool, \`codegraph_explore\`, and it is Read-equivalent. It
-takes either a natural-language question or a bag of symbol/file names and
-returns the **verbatim, line-numbered source** of the relevant symbols
-grouped by file — the same \`<n>\\t<line>\` shape \`Read\` gives you, safe to
-\`Edit\` from — PLUS the call path among them (including dynamic-dispatch hops
-like callbacks, React re-render, and JSX children that grep can't follow) and
-a blast-radius summary of what depends on them.
+\`codegraph_node\` reads what you can already name. Pass a \`symbol\` (with
+\`includeCode: true\`) for its location, signature, full body and caller/callee
+trail in one call; pass a \`file\` alone for that file's current line-numbered
+source — exactly the shape \`Read\` gives you (\`<n>\\t<line>\`, safe to \`Edit\`
+from), narrowable with \`offset\`/\`limit\` — plus a one-line note of which files
+depend on it. One known-symbol read costs about half an explore answer, and an
+ambiguous name returns every matching definition's body in that one call, so
+you never Read to find the right overload.
+
+\`codegraph_explore\` answers open questions. Give it a natural-language
+question or a bag of symbol/file names and it returns the **verbatim,
+line-numbered source** of the relevant symbols grouped by file, PLUS the call
+path among them (including dynamic-dispatch hops like callbacks, React
+re-render, and JSX children that grep can't follow) and a blast-radius summary
+of what depends on them. It is also Read-equivalent: treat the source it
+returns as already Read.
 
 Whether you're answering "how does X work" or implementing a change (fixing a
-bug, adding a feature), call \`codegraph_explore\` before you Read. ONE call
-usually answers the whole question. Codegraph IS the pre-built search index —
-so running your own grep + read loop, or delegating the lookup to a separate
+bug, adding a feature), call codegraph before you Read. ONE call usually
+answers the whole question. Codegraph IS the pre-built search index — so
+running your own grep + read loop, or delegating the lookup to a separate
 file-reading sub-task/agent, repeats work codegraph already did and costs more
 for the same answer. A direct codegraph answer is typically one to a few
 calls; a grep/read exploration is dozens.
 
 ## How to query
 
-- **Almost any question — "how does X work", architecture, a bug, "what/where is X", or surveying an area** → \`codegraph_explore\` with a natural-language question or the relevant names. ONE capped call returns the verbatim source grouped by file; most often the ONLY call you need.
+- **A known symbol or file — "read/show me X", or any file or symbol a trail names** → \`codegraph_node\` first: \`symbol\` for the full body + caller/callee trail, \`file\` for that file's line-numbered source (same shape as Read). Use it instead of \`Read\`.
+- **Almost any other question — "how does X work", architecture, a bug, "what/where is X", or surveying an area** → \`codegraph_explore\` with a natural-language question or the relevant names. ONE capped call returns the verbatim source grouped by file; most often the ONLY call you need.
 - **"How does X reach/become Y? / the flow / the path from X to Y"** → \`codegraph_explore\`, naming the symbols that span the flow (e.g. \`mutateElement renderScene\`) — it surfaces the call path among them, riding dynamic-dispatch hops, and returns their source.
-- **Reading or editing a file/symbol you can name** → put its name or file path in the \`codegraph_explore\` query — it returns that current line-numbered source (safe to \`Edit\` from) with the call path and blast radius attached, so you don't Read it separately. For an overloaded name it returns every matching definition's body in one call.
-- **Need more?** Call \`codegraph_explore\` again with more specific names — treat the source it returns as already Read. Suggested call counts are advisory only, NOT a quota; extra calls are never rejected or rate-limited.
+- **Need more?** Call \`codegraph_explore\` again with more specific names, or \`codegraph_node\` for one symbol in full — treat the source either returns as already Read. Suggested call counts are advisory only, NOT a quota; extra calls are never rejected or rate-limited.
 - Qualified symbol names accept dots, \`::\`, or slashes, including containers whose names contain dots (for example, \`AppWeb.Format.group\`).
 - Named-symbol call paths require exact matches; partial or mistyped names are never silently substituted as flow endpoints. If a graph query reports a missing symbol with did-you-mean suggestions, query the suggested name explicitly.
 - Explore matches names and indexed code words lexically, not by meaning; an empty result reports word matches and may suggest indexed candidate names to retry with \`codegraph_explore\`.
@@ -62,7 +72,7 @@ calls; a grep/read exploration is dozens.
 ## Anti-patterns
 
 - **Trust codegraph's results — don't re-verify them with grep.** They come from a full AST parse; re-checking with grep is slower, less accurate, and wastes context.
-- **Don't grep or Read first** to find or understand indexed code — ONE \`codegraph_explore\` returns the relevant symbols' source together in a single round-trip. Reach for raw \`Read\`/\`Grep\` only to confirm a specific detail codegraph didn't cover, or for what codegraph doesn't index (configs, docs).
+- **Don't grep or Read first** to find or understand indexed code — ONE \`codegraph_explore\` (or \`codegraph_node\` for a symbol or file you can name) returns the relevant source in a single round-trip. Reach for raw \`Read\`/\`Grep\` only to confirm a specific detail codegraph didn't cover, or for what codegraph doesn't index (configs, docs).
 - **Don't reconstruct a flow by hand** — name the endpoints in one \`codegraph_explore\` and it surfaces the path between them, dynamic-dispatch hops included.
 - A **size-exclusion coverage notice** means some source files have no indexed symbols or call paths. The notice names the shared project setting; a completed indexing run does not imply full source coverage.
 - **After editing, check the staleness banner.** When a tool response starts with "⚠️ Some files referenced below were edited since the last index sync…", the listed files are pending re-index — Read those specific files for accurate content. Every file NOT in that banner is fresh, so still trust codegraph. A different, rarer banner — "⚠️ CodeGraph auto-sync is DISABLED…" or "⚠️ CodeGraph auto-sync is RECOVERING…" — means the whole index may be stale; until the full catch-up completes, Read files directly to confirm anything that may have changed. If a response refuses to answer from changed files or says freshness could not be verified within its budget, retry after sync or narrow the query; that refusal is not an error in the tool.
@@ -93,18 +103,20 @@ calls; a grep/read exploration is dozens.
 export const SERVER_INSTRUCTIONS_NO_ROOT_INDEX = `# Codegraph — available (per-project; pass projectPath)
 
 Codegraph is a SQLite knowledge graph of a codebase's symbols, edges, and
-files (30+ languages): one \`codegraph_explore\` call returns the verbatim, line-numbered source
-of the relevant symbols PLUS the call paths between them and a blast-radius
-summary — replacing a grep + Read loop with one round-trip.
+files (30+ languages): \`codegraph_explore\` returns the verbatim, line-numbered
+source of the relevant symbols PLUS the call paths between them and a
+blast-radius summary, and \`codegraph_node\` reads one symbol or file you can
+name in full (body + caller/callee trail, or Read-parity file source) —
+replacing a grep + Read loop with one round-trip.
 
 This server started somewhere with no \`.codegraph/\` of its own, so there is no
 default project — but the tools are available and work **per project**:
 
 - To query a project that HAS a \`.codegraph/\` index (e.g. a service inside a
   monorepo, or a second repo), pass its path as \`projectPath\` to
-  \`codegraph_explore\` (and any other codegraph tool). Codegraph resolves the
-  nearest \`.codegraph/\` at or above that path and answers from it — for as many
-  projects as you like in one session.
+  \`codegraph_explore\` or \`codegraph_node\` (and any other codegraph tool).
+  Codegraph resolves the nearest \`.codegraph/\` at or above that path and
+  answers from it — for as many projects as you like in one session.
 - For a project with no \`.codegraph/\`, use your built-in tools (Read/Grep/Glob)
   for that project. Indexing is the user's decision — don't run it yourself, but
   if it comes up they can run \`codegraph init\` in a project to enable codegraph

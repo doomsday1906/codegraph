@@ -34,11 +34,12 @@ export function getMcpServerConfig(): { type: string; command: string; args: str
  * have a permissions concept can compose this list directly.
  *
  * One server-scoped wildcard rather than a per-tool list. By default only
- * `codegraph_explore` is even LISTED to the agent (see DEFAULT_MCP_TOOLS in
- * mcp/tools.ts), so in practice explore is the only tool this auto-approves —
- * but the wildcard means that if a user re-enables another tool via
- * CODEGRAPH_MCP_TOOLS, it's already pre-approved (no permission prompt, no
- * hand-editing settings.json), and future tools are covered too. Claude only
+ * `codegraph_explore` and `codegraph_node` are even LISTED to the agent (see
+ * DEFAULT_MCP_TOOLS in mcp/tools.ts), so in practice those two are what this
+ * auto-approves in a stock install — but the wildcard means that if a user
+ * re-enables another tool via CODEGRAPH_MCP_TOOLS, it's already pre-approved
+ * (no permission prompt, no hand-editing settings.json), and future tools are
+ * covered too. Claude only
  * honors globs after a literal `mcp__<server>__` prefix, so this exact string
  * is the way to allow-all for one server; a bare `mcp__codegraph` or `*` is
  * ignored. The allowlist gates PROMPTING, not visibility, so a superset here

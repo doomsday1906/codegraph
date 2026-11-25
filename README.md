@@ -471,7 +471,7 @@ npm install -g @colbymchenry/codegraph
 }
 ```
 
-<sub>One wildcard auto-approves every CodeGraph tool — `codegraph_explore` is the only one listed by default, but if you re-enable others via `CODEGRAPH_MCP_TOOLS` they're already permitted, no prompt.</sub>
+<sub>One wildcard auto-approves every CodeGraph tool — `codegraph_explore` and `codegraph_node` are the two listed by default, but if you re-enable others via `CODEGRAPH_MCP_TOOLS` they're already permitted, no prompt.</sub>
 
 </details>
 
@@ -583,13 +583,14 @@ fi
 
 ## MCP Tools
 
-When running as an MCP server, CodeGraph exposes a **single tool** — `codegraph_explore`. Measured agent behavior showed that one strong tool steers agents better than a menu of narrower ones — fewer mis-picks, and it saves context every session:
+When running as an MCP server, CodeGraph exposes **two tools** — `codegraph_explore` for open questions and flows, and `codegraph_node` for a symbol or file you can already name. Measured agent behavior showed that a couple of well-aimed tools steer agents better than a menu of narrower ones — fewer mis-picks, and it saves context every session:
 
 | Tool | Purpose |
 |------|---------|
-| `codegraph_explore` | Answer almost any question in one call — "how does X work", a flow ("how does X reach Y"), or surveying an area — returning the relevant symbols' verbatim source grouped by file, plus the call paths between them and a blast-radius summary. Surfaces dynamic-dispatch hops (callbacks, React re-render, interface→impl) grep can't follow. Name a file or symbol in the query to read its current line-numbered source, the same shape the Read tool gives you. |
+| `codegraph_explore` | Answer almost any open question in one call — "how does X work", a flow ("how does X reach Y"), or surveying an area — returning the relevant symbols' verbatim source grouped by file, plus the call paths between them and a blast-radius summary. Surfaces dynamic-dispatch hops (callbacks, React re-render, interface→impl) grep can't follow. |
+| `codegraph_node` | Read what you can already name: one symbol's full body plus its caller/callee trail (every overload's body for an ambiguous name), or a whole file with line numbers — the same shape the Read tool gives you, narrowable with `offset`/`limit`. |
 
-The other tools (`codegraph_node`, `codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
+The other tools (`codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
 
 Even when the server's own root has no `.codegraph/` index, the tools stay available: pass `projectPath` to query any indexed project — a sub-service in a monorepo, or a second repo — in the same session. A path that has no index returns clean guidance to use built-in tools instead, so nothing fails loudly, and indexing stays your decision.
 

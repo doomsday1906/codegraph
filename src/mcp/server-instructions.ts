@@ -40,8 +40,9 @@ trail in one call; pass a \`file\` alone for that file's current line-numbered
 source — exactly the shape \`Read\` gives you (\`<n>\\t<line>\`, safe to \`Edit\`
 from), narrowable with \`offset\`/\`limit\` — plus a one-line note of which files
 depend on it. One known-symbol read costs about half an explore answer, and an
-ambiguous name returns every matching definition's body in that one call, so
-you never Read to find the right overload.
+ambiguous name returns the matching overloads' bodies that fit the response cap
+(any remainder is listed by file:line), so you never Read to find the right
+overload.
 
 \`codegraph_explore\` answers open questions. Give it a natural-language
 question or a bag of symbol/file names and it returns the **verbatim,
@@ -106,8 +107,9 @@ Codegraph is a SQLite knowledge graph of a codebase's symbols, edges, and
 files (30+ languages): \`codegraph_explore\` returns the verbatim, line-numbered
 source of the relevant symbols PLUS the call paths between them and a
 blast-radius summary, and \`codegraph_node\` reads one symbol or file you can
-name in full (body + caller/callee trail, or Read-parity file source) —
-replacing a grep + Read loop with one round-trip.
+name — pass \`includeCode: true\` for a symbol's body + caller/callee trail, or
+\`file\` alone for Read-parity file source — replacing a grep + Read loop with
+one round-trip.
 
 This server started somewhere with no \`.codegraph/\` of its own, so there is no
 default project — but the tools are available and work **per project**:

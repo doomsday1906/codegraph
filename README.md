@@ -583,12 +583,12 @@ fi
 
 ## MCP Tools
 
-When running as an MCP server, CodeGraph exposes **two tools** — `codegraph_explore` for open questions and flows, and `codegraph_node` for a symbol or file you can already name. Measured agent behavior showed that a couple of well-aimed tools steer agents better than a menu of narrower ones — fewer mis-picks, and it saves context every session:
+When running as an MCP server, CodeGraph exposes **two tools** — `codegraph_explore` for open questions and flows, and `codegraph_node` for a symbol or file you can already name. The single-strong-tool measurement behind explore still applies: a focused tool steers agents better than a menu of narrower ones — fewer mis-picks, and it saves context every session. `codegraph_node` adds the known-symbol read that previously forced an explore dump or a Read, without turning the surface into that menu:
 
 | Tool | Purpose |
 |------|---------|
 | `codegraph_explore` | Answer almost any open question in one call — "how does X work", a flow ("how does X reach Y"), or surveying an area — returning the relevant symbols' verbatim source grouped by file, plus the call paths between them and a blast-radius summary. Surfaces dynamic-dispatch hops (callbacks, React re-render, interface→impl) grep can't follow. |
-| `codegraph_node` | Read what you can already name: one symbol's full body plus its caller/callee trail (every overload's body for an ambiguous name), or a whole file with line numbers — the same shape the Read tool gives you, narrowable with `offset`/`limit`. |
+| `codegraph_node` | Read what you can already name: one symbol's full body plus its caller/callee trail (for an ambiguous name, the matching overloads' bodies that fit the response cap, with any remainder listed by file:line), or a whole file with line numbers — the same shape the Read tool gives you, narrowable with `offset`/`limit`. |
 
 The other tools (`codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
 

@@ -15,9 +15,9 @@ When a `.codegraph/` index exists, the agent gets the tools below. In a workspac
 
 By default the server exposes **two tools**. `codegraph_explore` answers open questions and flows: give it a natural-language question or a bag of symbol and file names, and it returns the **verbatim, line-numbered source** of the relevant symbols grouped by file — the same shape the `Read` tool gives you — plus the call paths between them (including dynamic-dispatch hops like callbacks, React re-render, and JSX children that grep can't follow) and a blast-radius summary of what depends on them. One call usually answers the whole question.
 
-`codegraph_node` reads what you can already name: one symbol's full body plus its caller/callee trail (every overload's body for an ambiguous name), or a whole file with line numbers, narrowable with `offset`/`limit` — the same shape the `Read` tool gives you. It returns the same sufficient answer at about half the size of an explore response, so the agent stops probing for a way to read just that symbol.
+`codegraph_node` reads what you can already name: one symbol's full body plus its caller/callee trail (for an ambiguous name, the matching overloads' bodies that fit the response cap, with any remainder listed by file:line), or a whole file with line numbers, narrowable with `offset`/`limit` — the same shape the `Read` tool gives you. It returns the same sufficient answer at about half the size of an explore response, so the agent stops probing for a way to read just that symbol.
 
-Keeping the default to these two well-aimed tools is deliberate. Measured agent behavior showed that a short list of strong tools steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for them both when answering questions and while editing code.
+Keeping the default focused is deliberate. The measured single-strong-tool result still applies: a well-aimed tool steers agents to a direct answer better than a menu of narrower ones — fewer mis-picks — and agents reach for it both when answering questions and while editing code. `codegraph_node` adds the known-symbol read that previously forced an explore dump or a Read, without turning the surface into that menu.
 
 ## The other tools
 

@@ -134,8 +134,9 @@ describe('No-root-index session policy', () => {
 
     const res = await request(child, { id: 1, method: 'tools/list' });
     const tools = (res.result as { tools: Array<{ name: string }> }).tools;
-    expect(tools.length).toBeGreaterThanOrEqual(1);
-    expect(tools.map((t) => t.name)).toContain('codegraph_explore');
+    // Exact default surface from the BUILT server (dist/bin/codegraph.js):
+    // explore for open questions/flows, node for a known symbol or file.
+    expect(tools.map((t) => t.name).sort()).toEqual(['codegraph_explore', 'codegraph_node']);
   });
 
   it('a query by projectPath reaches an INDEXED sub-project of an unindexed root (monorepo) (#964)', async () => {
@@ -180,11 +181,10 @@ describe('No-root-index session policy', () => {
 
     const list = await request(child, { id: 1, method: 'tools/list' });
     const tools = (list.result as { tools: Array<{ name: string }> }).tools;
-    // The default surface is pared to explore alone (see DEFAULT_MCP_TOOLS) — the
-    // contract under test is "indexed → tools are PRESENT", in contrast to the
-    // unindexed empty list above.
-    expect(tools.length).toBeGreaterThanOrEqual(1);
-    expect(tools.map((t) => t.name)).toContain('codegraph_explore');
+    // The default surface is explore + node (see DEFAULT_MCP_TOOLS). The
+    // contract under test is "indexed → tools are PRESENT" (the pre-#964 bug
+    // hid them); the exact default must match the unindexed surface above.
+    expect(tools.map((t) => t.name).sort()).toEqual(['codegraph_explore', 'codegraph_node']);
   });
 });
 
